@@ -19,6 +19,10 @@ dependencies = [
     "scipy>=1.10.0",
     "statsmodels>=0.14.0",
     "plotly>=5.14.0",
+    "geopandas>=0.14.0",
+    "contextily>=1.4.0",
+    "mapclassify>=2.6.0",
+    "folium>=0.15.0",
 ]
 
 [dependency-groups]
