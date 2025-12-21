@@ -1,0 +1,964 @@
+---
+title: "Multivariate Bayesian Decision Theory: Healthcare Applications"
+author: "Data Science Tutorial"
+format:
+  html:
+    toc: true
+    toc-depth: 3
+    code-fold: false
+    theme: cosmo
+    highlight-style: github
+    number-sections: true
+execute:
+  warning: false
+  message: false
+---
+
+# Introduction to Multivariate Bayesian Decision Theory
+
+In real-world applications, decisions often depend on multiple features or parameters simultaneously. Multivariate Bayesian Decision Theory extends the univariate framework to handle:
+
+- **Multiple features**: Patient symptoms, lab results, demographics
+- **Multiple parameters**: Disease prevalence rates, treatment effects
+- **Multiple outcomes**: Different disease types, risk categories
+
+The core principle remains the same: choose actions that minimize expected loss given posterior beliefs, but now we work with **multivariate distributions**.
+
+## Mathematical Framework
+
+Given:
+- $\boldsymbol{\theta} \in \Theta \subseteq \mathbb{R}^p$: parameter vector
+- $\mathbf{x} \in \mathbb{R}^d$: observed feature vector
+- $a \in \mathcal{A}$: possible actions
+- $L(\boldsymbol{\theta}, a)$: loss function
+
+The **Bayes optimal decision** is:
+
+$$
+a^* = \arg\min_{a \in \mathcal{A}} \mathbb{E}_{\boldsymbol{\theta}|\mathbf{x}}[L(\boldsymbol{\theta}, a)] = \arg\min_{a \in \mathcal{A}} \int L(\boldsymbol{\theta}, a) p(\boldsymbol{\theta}|\mathbf{x}) d\boldsymbol{\theta}
+$$
+
+For multivariate normal models, we have conjugacy properties that allow analytical solutions.
+
+# Setup
+
+```{r setup}
+library(ggplot2)
+library(dplyr)
+library(tidyr)
+library(MASS)
+library(mvtnorm)
+library(gridExtra)
+library(reshape2)
+
+# Set seed for reproducibility
+set.seed(123)
+
+# Custom theme for plots
+theme_set(theme_minimal(base_size = 12))
+
+# Helper function for plotting bivariate normal
+plot_bivariate_normal <- function(mu, Sigma, title = "", xlim = NULL, ylim = NULL) {
+  if (is.null(xlim)) xlim <- mu[1] + c(-3, 3) * sqrt(Sigma[1,1])
+  if (is.null(ylim)) ylim <- mu[2] + c(-3, 3) * sqrt(Sigma[2,2])
+
+  x_seq <- seq(xlim[1], xlim[2], length.out = 100)
+  y_seq <- seq(ylim[1], ylim[2], length.out = 100)
+  grid <- expand.grid(x = x_seq, y = y_seq)
+
+  grid$density <- dmvnorm(as.matrix(grid), mean = mu, sigma = Sigma)
+
+  ggplot(grid, aes(x = x, y = y, z = density)) +
+    geom_contour_filled(bins = 15, alpha = 0.8) +
+    geom_contour(color = "white", alpha = 0.3, bins = 15) +
+    geom_point(x = mu[1], y = mu[2], color = "red", size = 3, shape = 4, stroke = 2) +
+    scale_fill_viridis_d(option = "plasma") +
+    labs(title = title, x = "Feature 1", y = "Feature 2") +
+    coord_fixed() +
+    theme(legend.position = "none")
+}
+```
+
+# Example 1: Multivariate Disease Diagnosis
+
+## Problem Setup
+
+A patient presents with two biomarkers measured from a blood test. We want to diagnose whether they have Disease A, Disease B, or are healthy.
+
+**Features**: $\mathbf{x} = (x_1, x_2)$ - two continuous biomarker levels
+
+**Classes**:
+- Healthy: $\boldsymbol{\mu}_H = (0, 0)$
+- Disease A: $\boldsymbol{\mu}_A = (3, 1)$
+- Disease B: $\boldsymbol{\mu}_B = (1, 3)$
+
+**Class-conditional distributions**: $\mathbf{x}|\text{class} \sim \mathcal{N}(\boldsymbol{\mu}_{\text{class}}, \boldsymbol{\Sigma})$
+
+**Prior probabilities**:
+- $P(\text{Healthy}) = 0.85$
+- $P(\text{Disease A}) = 0.10$
+- $P(\text{Disease B}) = 0.05$
+
+**Loss matrix**: Different costs for misdiagnosis
+$$
+L = \begin{pmatrix}
+0 & 50 & 50 \\
+100 & 0 & 30 \\
+100 & 30 & 0
+\end{pmatrix}
+$$
+
+Rows = True class (H, A, B), Columns = Predicted class (H, A, B)
+
+## Generate Synthetic Data
+
+```{r multivariate-disease-data}
+# True parameters
+mu_healthy <- c(0, 0)
+mu_disease_a <- c(3, 1)
+mu_disease_b <- c(1, 3)
+
+# Common covariance matrix
+Sigma <- matrix(c(1.0, 0.3,
+                  0.3, 1.0), nrow = 2)
+
+# Prior probabilities
+prior_healthy <- 0.85
+prior_disease_a <- 0.10
+prior_disease_b <- 0.05
+
+# Generate synthetic patient data
+n_samples <- 500
+true_classes <- sample(c("Healthy", "Disease_A", "Disease_B"),
+                       size = n_samples,
+                       replace = TRUE,
+                       prob = c(prior_healthy, prior_disease_a, prior_disease_b))
+
+# Generate features based on true class
+features <- matrix(NA, nrow = n_samples, ncol = 2)
+for (i in 1:n_samples) {
+  if (true_classes[i] == "Healthy") {
+    features[i,] <- mvrnorm(1, mu_healthy, Sigma)
+  } else if (true_classes[i] == "Disease_A") {
+    features[i,] <- mvrnorm(1, mu_disease_a, Sigma)
+  } else {
+    features[i,] <- mvrnorm(1, mu_disease_b, Sigma)
+  }
+}
+
+patient_data <- data.frame(
+  x1 = features[,1],
+  x2 = features[,2],
+  true_class = factor(true_classes, levels = c("Healthy", "Disease_A", "Disease_B"))
+)
+
+# Visualize the data
+ggplot(patient_data, aes(x = x1, y = x2, color = true_class)) +
+  geom_point(alpha = 0.6, size = 2) +
+  stat_ellipse(level = 0.95, linewidth = 1) +
+  scale_color_manual(values = c("Healthy" = "#2ecc71",
+                                "Disease_A" = "#e74c3c",
+                                "Disease_B" = "#3498db"),
+                     labels = c("Healthy", "Disease A", "Disease B")) +
+  labs(title = "Patient Biomarker Distributions by True Diagnosis",
+       subtitle = "95% confidence ellipses shown",
+       x = "Biomarker 1",
+       y = "Biomarker 2",
+       color = "True Class") +
+  theme(legend.position = "top")
+```
+
+## Bayesian Classification
+
+```{r multivariate-classification}
+# Function to compute posterior probabilities
+compute_posterior <- function(x, mu_h, mu_a, mu_b, Sigma, prior_h, prior_a, prior_b) {
+  # Compute likelihoods
+  lik_h <- dmvnorm(x, mean = mu_h, sigma = Sigma)
+  lik_a <- dmvnorm(x, mean = mu_a, sigma = Sigma)
+  lik_b <- dmvnorm(x, mean = mu_b, sigma = Sigma)
+
+  # Compute marginal (evidence)
+  evidence <- lik_h * prior_h + lik_a * prior_a + lik_b * prior_b
+
+  # Compute posteriors
+  post_h <- (lik_h * prior_h) / evidence
+  post_a <- (lik_a * prior_a) / evidence
+  post_b <- (lik_b * prior_b) / evidence
+
+  return(c(post_h, post_a, post_b))
+}
+
+# Loss matrix: L[true_class, predicted_class]
+#              Predict H  Predict A  Predict B
+# True H:           0         50         50
+# True A:         100          0         30
+# True B:         100         30          0
+
+loss_matrix <- matrix(c(0,   50,  50,
+                       100,  0,   30,
+                       100,  30,  0),
+                     nrow = 3, byrow = TRUE)
+
+# Function to compute expected loss for each action
+compute_expected_losses <- function(posterior, loss_matrix) {
+  # posterior is a vector [P(H|x), P(A|x), P(B|x)]
+  # For each action (column), compute expected loss
+  expected_losses <- loss_matrix %*% posterior
+  return(as.vector(expected_losses))
+}
+
+# Function to make optimal decision
+optimal_decision <- function(x) {
+  posterior <- compute_posterior(x, mu_healthy, mu_disease_a, mu_disease_b,
+                                Sigma, prior_healthy, prior_disease_a, prior_disease_b)
+  expected_losses <- compute_expected_losses(posterior, loss_matrix)
+  decision_idx <- which.min(expected_losses)
+  decisions <- c("Healthy", "Disease_A", "Disease_B")
+  return(list(decision = decisions[decision_idx],
+              posterior = posterior,
+              expected_losses = expected_losses))
+}
+
+# Test on example patients
+cat("Example Patient 1: Biomarkers = (0.5, 0.3)\n")
+result1 <- optimal_decision(c(0.5, 0.3))
+cat("Posterior probabilities: H =", round(result1$posterior[1], 3),
+    ", A =", round(result1$posterior[2], 3),
+    ", B =", round(result1$posterior[3], 3), "\n")
+cat("Expected losses: H =", round(result1$expected_losses[1], 2),
+    ", A =", round(result1$expected_losses[2], 2),
+    ", B =", round(result1$expected_losses[3], 2), "\n")
+cat("Optimal decision:", result1$decision, "\n\n")
+
+cat("Example Patient 2: Biomarkers = (2.5, 1.5)\n")
+result2 <- optimal_decision(c(2.5, 1.5))
+cat("Posterior probabilities: H =", round(result2$posterior[1], 3),
+    ", A =", round(result2$posterior[2], 3),
+    ", B =", round(result2$posterior[3], 3), "\n")
+cat("Expected losses: H =", round(result2$expected_losses[1], 2),
+    ", A =", round(result2$expected_losses[2], 2),
+    ", B =", round(result2$expected_losses[3], 2), "\n")
+cat("Optimal decision:", result2$decision, "\n\n")
+
+cat("Example Patient 3: Biomarkers = (1.2, 2.8)\n")
+result3 <- optimal_decision(c(1.2, 2.8))
+cat("Posterior probabilities: H =", round(result3$posterior[1], 3),
+    ", A =", round(result3$posterior[2], 3),
+    ", B =", round(result3$posterior[3], 3), "\n")
+cat("Expected losses: H =", round(result3$expected_losses[1], 2),
+    ", A =", round(result3$expected_losses[2], 2),
+    ", B =", round(result3$expected_losses[3], 2), "\n")
+cat("Optimal decision:", result3$decision, "\n")
+```
+
+## Decision Boundary Visualization
+
+```{r decision-boundaries}
+# Create grid for decision boundary visualization
+x1_seq <- seq(-3, 5, length.out = 200)
+x2_seq <- seq(-3, 5, length.out = 200)
+decision_grid <- expand.grid(x1 = x1_seq, x2 = x2_seq)
+
+# Compute optimal decision for each point
+decisions <- character(nrow(decision_grid))
+posteriors_h <- numeric(nrow(decision_grid))
+posteriors_a <- numeric(nrow(decision_grid))
+posteriors_b <- numeric(nrow(decision_grid))
+
+for (i in 1:nrow(decision_grid)) {
+  result <- optimal_decision(c(decision_grid$x1[i], decision_grid$x2[i]))
+  decisions[i] <- result$decision
+  posteriors_h[i] <- result$posterior[1]
+  posteriors_a[i] <- result$posterior[2]
+  posteriors_b[i] <- result$posterior[3]
+}
+
+decision_grid$decision <- factor(decisions, levels = c("Healthy", "Disease_A", "Disease_B"))
+decision_grid$posterior_h <- posteriors_h
+decision_grid$posterior_a <- posteriors_a
+decision_grid$posterior_b <- posteriors_b
+
+# Plot decision regions
+p1 <- ggplot(decision_grid, aes(x = x1, y = x2, fill = decision)) +
+  geom_raster(alpha = 0.4) +
+  geom_point(data = patient_data, aes(color = true_class),
+             size = 1.5, alpha = 0.6, inherit.aes = FALSE) +
+  scale_fill_manual(values = c("Healthy" = "#2ecc71",
+                               "Disease_A" = "#e74c3c",
+                               "Disease_B" = "#3498db"),
+                    name = "Decision Region") +
+  scale_color_manual(values = c("Healthy" = "#27ae60",
+                                "Disease_A" = "#c0392b",
+                                "Disease_B" = "#2980b9"),
+                     name = "True Class") +
+  labs(title = "Optimal Decision Regions",
+       subtitle = "Based on asymmetric loss function",
+       x = "Biomarker 1",
+       y = "Biomarker 2") +
+  theme(legend.position = "top")
+
+print(p1)
+
+# Plot posterior probability surfaces
+p2 <- ggplot(decision_grid, aes(x = x1, y = x2, fill = posterior_a)) +
+  geom_raster() +
+  scale_fill_gradient2(low = "#2ecc71", mid = "#f39c12", high = "#e74c3c",
+                      midpoint = 0.5, limits = c(0, 1)) +
+  geom_contour(aes(z = posterior_a), color = "white", alpha = 0.5, breaks = c(0.3, 0.5, 0.7)) +
+  labs(title = "Posterior Probability: Disease A",
+       x = "Biomarker 1",
+       y = "Biomarker 2",
+       fill = "P(Disease A | x)") +
+  theme(legend.position = "right")
+
+p3 <- ggplot(decision_grid, aes(x = x1, y = x2, fill = posterior_b)) +
+  geom_raster() +
+  scale_fill_gradient2(low = "#2ecc71", mid = "#f39c12", high = "#3498db",
+                      midpoint = 0.5, limits = c(0, 1)) +
+  geom_contour(aes(z = posterior_b), color = "white", alpha = 0.5, breaks = c(0.3, 0.5, 0.7)) +
+  labs(title = "Posterior Probability: Disease B",
+       x = "Biomarker 1",
+       y = "Biomarker 2",
+       fill = "P(Disease B | x)") +
+  theme(legend.position = "right")
+
+grid.arrange(p2, p3, ncol = 2)
+```
+
+## Performance Evaluation
+
+```{r performance-eval}
+# Make predictions for all patients
+patient_predictions <- character(nrow(patient_data))
+for (i in 1:nrow(patient_data)) {
+  result <- optimal_decision(c(patient_data$x1[i], patient_data$x2[i]))
+  patient_predictions[i] <- result$decision
+}
+
+patient_data$predicted_class <- factor(patient_predictions,
+                                      levels = c("Healthy", "Disease_A", "Disease_B"))
+
+# Confusion matrix
+confusion_matrix <- table(True = patient_data$true_class,
+                         Predicted = patient_data$predicted_class)
+print("Confusion Matrix:")
+print(confusion_matrix)
+
+# Calculate accuracy
+accuracy <- sum(diag(confusion_matrix)) / sum(confusion_matrix)
+cat("\nOverall Accuracy:", round(accuracy, 3), "\n\n")
+
+# Calculate expected loss
+total_expected_loss <- 0
+for (i in 1:nrow(patient_data)) {
+  true_idx <- which(c("Healthy", "Disease_A", "Disease_B") == patient_data$true_class[i])
+  pred_idx <- which(c("Healthy", "Disease_A", "Disease_B") == patient_data$predicted_class[i])
+  total_expected_loss <- total_expected_loss + loss_matrix[true_idx, pred_idx]
+}
+avg_loss <- total_expected_loss / nrow(patient_data)
+cat("Average Loss per Patient:", round(avg_loss, 2), "\n")
+
+# Sensitivity and Specificity for each disease
+cat("\nClass-specific Metrics:\n")
+for (class in c("Healthy", "Disease_A", "Disease_B")) {
+  tp <- confusion_matrix[class, class]
+  fn <- sum(confusion_matrix[class, ]) - tp
+  fp <- sum(confusion_matrix[, class]) - tp
+  tn <- sum(confusion_matrix) - tp - fn - fp
+
+  sensitivity <- tp / (tp + fn)
+  specificity <- tn / (tn + fp)
+  precision <- tp / (tp + fp)
+
+  cat(sprintf("%s: Sensitivity=%.3f, Specificity=%.3f, Precision=%.3f\n",
+              class, sensitivity, specificity, precision))
+}
+```
+
+# Example 2: Treatment Selection with Multiple Patient Features
+
+## Problem Setup
+
+A hospital needs to decide which of three treatments to recommend for patients with cardiovascular disease based on their risk profile.
+
+**Features**:
+- Age (standardized)
+- Blood pressure (standardized)
+- Cholesterol level (standardized)
+
+**Treatment options**:
+1. Lifestyle modification only (low cost, low risk)
+2. Medication (moderate cost, moderate risk)
+3. Surgical intervention (high cost, high risk, high benefit for high-risk patients)
+
+**Outcome**: We estimate the patient's underlying risk score $\theta$ and choose treatment to minimize:
+- Cost of treatment
+- Risk of adverse outcome (depends on $\theta$ and treatment)
+
+## Generate Patient Data
+
+```{r treatment-data}
+# Generate synthetic patient data
+n_patients <- 300
+
+# Risk score (latent variable)
+true_risk <- rnorm(n_patients, mean = 50, sd = 15)
+true_risk <- pmax(0, pmin(100, true_risk))  # Clip to [0, 100]
+
+# Features are noisy measurements related to risk
+age <- true_risk * 0.4 + rnorm(n_patients, 0, 10)
+blood_pressure <- true_risk * 0.5 + rnorm(n_patients, 0, 12)
+cholesterol <- true_risk * 0.6 + rnorm(n_patients, 0, 15)
+
+# Standardize features
+age_std <- scale(age)[,1]
+bp_std <- scale(blood_pressure)[,1]
+chol_std <- scale(cholesterol)[,1]
+
+treatment_data <- data.frame(
+  age_std = age_std,
+  bp_std = bp_std,
+  chol_std = chol_std,
+  true_risk = true_risk
+)
+
+# Visualize relationship between features and risk
+treatment_data_long <- treatment_data %>%
+  pivot_longer(cols = c(age_std, bp_std, chol_std),
+               names_to = "feature",
+               values_to = "value") %>%
+  mutate(feature = recode(feature,
+                         age_std = "Age (std)",
+                         bp_std = "Blood Pressure (std)",
+                         chol_std = "Cholesterol (std)"))
+
+ggplot(treatment_data_long, aes(x = value, y = true_risk)) +
+  geom_point(alpha = 0.5, color = "#3498db") +
+  geom_smooth(method = "lm", color = "#e74c3c", linewidth = 1.5) +
+  facet_wrap(~ feature, scales = "free_x") +
+  labs(title = "Relationship Between Patient Features and True Risk Score",
+       x = "Standardized Feature Value",
+       y = "True Risk Score") +
+  theme(strip.text = element_text(face = "bold"))
+```
+
+## Bayesian Risk Estimation
+
+We use a linear model to estimate risk from features:
+
+$$
+\theta = \boldsymbol{\beta}^T \mathbf{x} + \epsilon, \quad \epsilon \sim \mathcal{N}(0, \sigma^2)
+$$
+
+With a multivariate normal prior on $\boldsymbol{\beta}$:
+
+$$
+\boldsymbol{\beta} \sim \mathcal{N}(\boldsymbol{\mu}_0, \boldsymbol{\Sigma}_0)
+$$
+
+The posterior distribution is:
+
+$$
+\boldsymbol{\beta}|\mathbf{X}, \mathbf{y} \sim \mathcal{N}(\boldsymbol{\mu}_n, \boldsymbol{\Sigma}_n)
+$$
+
+```{r bayesian-regression}
+# Prepare data for Bayesian linear regression
+X <- cbind(1, treatment_data$age_std, treatment_data$bp_std, treatment_data$chol_std)
+y <- treatment_data$true_risk
+
+# Prior parameters (weakly informative)
+mu_0 <- c(50, 0, 0, 0)  # Prior mean: intercept = 50, slopes = 0
+Sigma_0 <- diag(c(100, 25, 25, 25))  # Prior covariance
+
+# Likelihood variance
+sigma_sq <- 100
+
+# Posterior parameters (using conjugate normal-normal update)
+Sigma_0_inv <- solve(Sigma_0)
+Sigma_n_inv <- Sigma_0_inv + (t(X) %*% X) / sigma_sq
+Sigma_n <- solve(Sigma_n_inv)
+mu_n <- Sigma_n %*% (Sigma_0_inv %*% mu_0 + (t(X) %*% y) / sigma_sq)
+
+cat("Posterior mean of coefficients:\n")
+cat("Intercept:", round(mu_n[1], 2), "\n")
+cat("Age coefficient:", round(mu_n[2], 2), "\n")
+cat("BP coefficient:", round(mu_n[3], 2), "\n")
+cat("Cholesterol coefficient:", round(mu_n[4], 2), "\n\n")
+
+cat("Posterior standard deviations:\n")
+cat("Intercept:", round(sqrt(Sigma_n[1,1]), 2), "\n")
+cat("Age:", round(sqrt(Sigma_n[2,2]), 2), "\n")
+cat("BP:", round(sqrt(Sigma_n[3,3]), 2), "\n")
+cat("Cholesterol:", round(sqrt(Sigma_n[4,4]), 2), "\n")
+```
+
+## Treatment Decision Under Uncertainty
+
+```{r treatment-decision}
+# Define treatment outcomes and costs
+# Treatment 1: Lifestyle (low intensity)
+# Treatment 2: Medication (moderate intensity)
+# Treatment 3: Surgery (high intensity)
+
+# Loss function: combines treatment cost + risk of bad outcome
+compute_treatment_loss <- function(risk_score, treatment) {
+  # Base costs
+  cost <- c(5, 20, 100)[treatment]  # Lifestyle, Medication, Surgery
+
+  # Outcome loss (depends on mismatch between risk and treatment intensity)
+  if (treatment == 1) {
+    # Lifestyle: bad outcome if high risk
+    outcome_loss <- ifelse(risk_score > 60, (risk_score - 60) * 2, 0)
+  } else if (treatment == 2) {
+    # Medication: good for moderate risk, overkill for low, underkill for very high
+    outcome_loss <- ifelse(risk_score < 30, (30 - risk_score) * 0.5,
+                          ifelse(risk_score > 70, (risk_score - 70) * 1.5, 0))
+  } else {
+    # Surgery: good for high risk, overkill for low risk
+    outcome_loss <- ifelse(risk_score < 50, (50 - risk_score) * 1.5, 0)
+  }
+
+  return(cost + outcome_loss)
+}
+
+# For a new patient, compute expected loss for each treatment
+compute_expected_treatment_loss <- function(x_new, mu_n, Sigma_n, sigma_sq, n_samples = 1000) {
+  # x_new is a feature vector [1, age_std, bp_std, chol_std]
+
+  # Sample from posterior distribution of risk score
+  # theta = beta^T x + epsilon
+  beta_samples <- mvrnorm(n_samples, mu_n, Sigma_n)
+  theta_mean_samples <- beta_samples %*% x_new
+  theta_samples <- rnorm(n_samples, theta_mean_samples, sqrt(sigma_sq))
+  theta_samples <- pmax(0, pmin(100, theta_samples))  # Clip to valid range
+
+  # Compute expected loss for each treatment
+  expected_losses <- numeric(3)
+  for (treatment in 1:3) {
+    losses <- sapply(theta_samples, function(theta) compute_treatment_loss(theta, treatment))
+    expected_losses[treatment] <- mean(losses)
+  }
+
+  return(list(expected_losses = expected_losses,
+              optimal_treatment = which.min(expected_losses),
+              theta_samples = theta_samples))
+}
+
+# Example patients
+cat("Example Patient 1: Low risk profile (all features = -1)\n")
+x1 <- c(1, -1, -1, -1)
+result1 <- compute_expected_treatment_loss(x1, mu_n, Sigma_n, sigma_sq)
+cat("Expected losses: Lifestyle =", round(result1$expected_losses[1], 2),
+    ", Medication =", round(result1$expected_losses[2], 2),
+    ", Surgery =", round(result1$expected_losses[3], 2), "\n")
+cat("Optimal treatment:", c("Lifestyle", "Medication", "Surgery")[result1$optimal_treatment], "\n\n")
+
+cat("Example Patient 2: Moderate risk profile (all features = 0)\n")
+x2 <- c(1, 0, 0, 0)
+result2 <- compute_expected_treatment_loss(x2, mu_n, Sigma_n, sigma_sq)
+cat("Expected losses: Lifestyle =", round(result2$expected_losses[1], 2),
+    ", Medication =", round(result2$expected_losses[2], 2),
+    ", Surgery =", round(result2$expected_losses[3], 2), "\n")
+cat("Optimal treatment:", c("Lifestyle", "Medication", "Surgery")[result2$optimal_treatment], "\n\n")
+
+cat("Example Patient 3: High risk profile (all features = 2)\n")
+x3 <- c(1, 2, 2, 2)
+result3 <- compute_expected_treatment_loss(x3, mu_n, Sigma_n, sigma_sq)
+cat("Expected losses: Lifestyle =", round(result3$expected_losses[1], 2),
+    ", Medication =", round(result3$expected_losses[2], 2),
+    ", Surgery =", round(result3$expected_losses[3], 2), "\n")
+cat("Optimal treatment:", c("Lifestyle", "Medication", "Surgery")[result3$optimal_treatment], "\n")
+```
+
+## Visualize Treatment Recommendations
+
+```{r visualize-treatment}
+# Create grid of patients varying in two features (BP and Cholesterol)
+bp_seq <- seq(-2, 2, length.out = 50)
+chol_seq <- seq(-2, 2, length.out = 50)
+treatment_grid <- expand.grid(bp_std = bp_seq, chol_std = chol_seq)
+
+# Fix age at median
+treatment_grid$age_std <- 0
+
+# Compute optimal treatment for each
+optimal_treatments <- numeric(nrow(treatment_grid))
+for (i in 1:nrow(treatment_grid)) {
+  x_new <- c(1, treatment_grid$age_std[i], treatment_grid$bp_std[i], treatment_grid$chol_std[i])
+  result <- compute_expected_treatment_loss(x_new, mu_n, Sigma_n, sigma_sq, n_samples = 500)
+  optimal_treatments[i] <- result$optimal_treatment
+}
+
+treatment_grid$optimal_treatment <- factor(optimal_treatments,
+                                          levels = 1:3,
+                                          labels = c("Lifestyle", "Medication", "Surgery"))
+
+ggplot(treatment_grid, aes(x = bp_std, y = chol_std, fill = optimal_treatment)) +
+  geom_raster(alpha = 0.8) +
+  scale_fill_manual(values = c("Lifestyle" = "#2ecc71",
+                               "Medication" = "#f39c12",
+                               "Surgery" = "#e74c3c")) +
+  labs(title = "Optimal Treatment Recommendations",
+       subtitle = "Based on Blood Pressure and Cholesterol (Age held at median)",
+       x = "Blood Pressure (standardized)",
+       y = "Cholesterol (standardized)",
+       fill = "Treatment") +
+  theme(legend.position = "top")
+
+# Visualize posterior uncertainty in risk estimation
+# For three example patients
+example_patients <- data.frame(
+  patient = c("Low Risk", "Moderate Risk", "High Risk"),
+  age_std = c(-1, 0, 2),
+  bp_std = c(-1, 0, 2),
+  chol_std = c(-1, 0, 2)
+)
+
+risk_samples_list <- list()
+for (i in 1:nrow(example_patients)) {
+  x_new <- c(1, example_patients$age_std[i], example_patients$bp_std[i],
+             example_patients$chol_std[i])
+  result <- compute_expected_treatment_loss(x_new, mu_n, Sigma_n, sigma_sq, n_samples = 2000)
+  risk_samples_list[[i]] <- data.frame(
+    risk = result$theta_samples,
+    patient = example_patients$patient[i]
+  )
+}
+
+risk_samples_df <- do.call(rbind, risk_samples_list)
+risk_samples_df$patient <- factor(risk_samples_df$patient,
+                                 levels = c("Low Risk", "Moderate Risk", "High Risk"))
+
+ggplot(risk_samples_df, aes(x = risk, fill = patient)) +
+  geom_density(alpha = 0.6) +
+  scale_fill_manual(values = c("Low Risk" = "#2ecc71",
+                               "Moderate Risk" = "#f39c12",
+                               "High Risk" = "#e74c3c")) +
+  labs(title = "Posterior Distribution of Risk Score",
+       subtitle = "Uncertainty in risk estimation for three example patients",
+       x = "Estimated Risk Score",
+       y = "Density",
+       fill = "Patient Type") +
+  theme(legend.position = "top")
+```
+
+# Example 3: Sequential Testing with Multivariate Outcomes
+
+## Problem Setup
+
+A clinician is deciding whether to order additional expensive tests based on initial screening results. The decision involves:
+
+1. **Initial screening**: Two quick, inexpensive tests (binary: positive/negative)
+2. **Confirmatory test**: Expensive, more accurate test
+3. **Decision**: Treat, don't treat, or order confirmatory test
+
+This is a **sequential decision problem** where we must balance:
+- Cost of additional testing
+- Risk of treating when not needed
+- Risk of missing treatment when needed
+
+## Model Setup
+
+```{r sequential-testing}
+# True disease states
+n_test_patients <- 1000
+disease_prevalence <- 0.15
+true_disease <- rbinom(n_test_patients, 1, disease_prevalence)
+
+# Test 1 and Test 2 characteristics
+# Sensitivity (True Positive Rate)
+test1_sens <- 0.80
+test2_sens <- 0.75
+
+# Specificity (True Negative Rate)
+test1_spec <- 0.85
+test2_spec <- 0.88
+
+# Generate test results
+test1_result <- numeric(n_test_patients)
+test2_result <- numeric(n_test_patients)
+
+for (i in 1:n_test_patients) {
+  if (true_disease[i] == 1) {
+    test1_result[i] <- rbinom(1, 1, test1_sens)
+    test2_result[i] <- rbinom(1, 1, test2_sens)
+  } else {
+    test1_result[i] <- rbinom(1, 1, 1 - test1_spec)
+    test2_result[i] <- rbinom(1, 1, 1 - test2_spec)
+  }
+}
+
+sequential_data <- data.frame(
+  test1 = factor(test1_result, levels = 0:1, labels = c("Negative", "Positive")),
+  test2 = factor(test2_result, levels = 0:1, labels = c("Negative", "Positive")),
+  disease = factor(true_disease, levels = 0:1, labels = c("Healthy", "Disease"))
+)
+
+# Visualize test combinations
+test_combo_summary <- sequential_data %>%
+  group_by(test1, test2, disease) %>%
+  summarise(count = n(), .groups = "drop") %>%
+  group_by(test1, test2) %>%
+  mutate(prop_disease = count / sum(count))
+
+ggplot(test_combo_summary, aes(x = test1, y = test2, fill = disease, alpha = count)) +
+  geom_tile(color = "white", linewidth = 1) +
+  geom_text(aes(label = count), position = position_stack(vjust = 0.5),
+            color = "white", fontface = "bold", size = 5) +
+  scale_fill_manual(values = c("Healthy" = "#2ecc71", "Disease" = "#e74c3c")) +
+  labs(title = "Distribution of Test Results by True Disease Status",
+       x = "Test 1 Result",
+       y = "Test 2 Result",
+       fill = "True Status",
+       alpha = "Count") +
+  theme_minimal(base_size = 14) +
+  theme(legend.position = "right")
+```
+
+## Bayesian Updating with Multiple Tests
+
+```{r bayesian-sequential}
+# Prior probability
+prior_disease <- disease_prevalence
+
+# Function to compute posterior given test results
+compute_posterior_disease <- function(test1_pos, test2_pos,
+                                     prior, sens1, spec1, sens2, spec2) {
+  # Likelihood P(Test1, Test2 | Disease)
+  if (test1_pos && test2_pos) {
+    lik_disease <- sens1 * sens2
+    lik_healthy <- (1 - spec1) * (1 - spec2)
+  } else if (test1_pos && !test2_pos) {
+    lik_disease <- sens1 * (1 - sens2)
+    lik_healthy <- (1 - spec1) * spec2
+  } else if (!test1_pos && test2_pos) {
+    lik_disease <- (1 - sens1) * sens2
+    lik_healthy <- spec1 * (1 - spec2)
+  } else {
+    lik_disease <- (1 - sens1) * (1 - sens2)
+    lik_healthy <- spec1 * spec2
+  }
+
+  # Posterior
+  numerator <- lik_disease * prior
+  denominator <- lik_disease * prior + lik_healthy * (1 - prior)
+
+  return(numerator / denominator)
+}
+
+# Compute posteriors for all test combinations
+test_combinations <- expand.grid(test1 = c(FALSE, TRUE), test2 = c(FALSE, TRUE))
+posteriors <- numeric(4)
+
+for (i in 1:4) {
+  posteriors[i] <- compute_posterior_disease(
+    test_combinations$test1[i],
+    test_combinations$test2[i],
+    prior_disease,
+    test1_sens, test1_spec,
+    test2_sens, test2_spec
+  )
+}
+
+posterior_summary <- data.frame(
+  test1 = factor(test_combinations$test1, levels = c(FALSE, TRUE),
+                labels = c("Negative", "Positive")),
+  test2 = factor(test_combinations$test2, levels = c(FALSE, TRUE),
+                labels = c("Negative", "Positive")),
+  posterior = posteriors
+)
+
+cat("Posterior Probabilities P(Disease | Test Results):\n\n")
+print(posterior_summary)
+
+# Visualize
+ggplot(posterior_summary, aes(x = test1, y = test2, fill = posterior)) +
+  geom_tile(color = "white", linewidth = 2) +
+  geom_text(aes(label = sprintf("%.3f", posterior)),
+            color = "white", fontface = "bold", size = 6) +
+  scale_fill_gradient2(low = "#2ecc71", mid = "#f39c12", high = "#e74c3c",
+                      midpoint = 0.5, limits = c(0, 1)) +
+  labs(title = "Posterior Probability of Disease",
+       subtitle = sprintf("Prior P(Disease) = %.2f", prior_disease),
+       x = "Test 1 Result",
+       y = "Test 2 Result",
+       fill = "P(Disease | Tests)") +
+  theme_minimal(base_size = 14) +
+  theme(legend.position = "right",
+        panel.grid = element_blank())
+```
+
+## Sequential Decision Making
+
+```{r sequential-decision}
+# Decision options and their costs/losses
+# 1. No treatment (cost = 0 if healthy, 100 if disease)
+# 2. Treatment (cost = 10 if healthy [unnecessary treatment], 5 if disease [treatment cost])
+# 3. Order confirmatory test (cost = 20 + optimal decision after test)
+
+# Confirmatory test characteristics (more accurate)
+confirm_sens <- 0.95
+confirm_spec <- 0.92
+confirm_cost <- 20
+
+# Decision function
+make_sequential_decision <- function(posterior_disease, confirm_sens, confirm_spec) {
+  # Option 1: No treatment
+  loss_no_treatment <- 0 * (1 - posterior_disease) + 100 * posterior_disease
+
+  # Option 2: Immediate treatment
+  loss_treatment <- 10 * (1 - posterior_disease) + 5 * posterior_disease
+
+  # Option 3: Order confirmatory test
+  # If confirmatory test is positive, we treat
+  # If negative, we don't treat
+
+  # Probability of positive confirmatory test
+  prob_confirm_pos <- confirm_sens * posterior_disease +
+                     (1 - confirm_spec) * (1 - posterior_disease)
+
+  # Posterior after positive confirmatory
+  post_confirm_pos <- (confirm_sens * posterior_disease) / prob_confirm_pos
+
+  # Posterior after negative confirmatory
+  prob_confirm_neg <- 1 - prob_confirm_pos
+  post_confirm_neg <- ((1 - confirm_sens) * posterior_disease) / prob_confirm_neg
+
+  # After confirmatory test, make optimal decision
+  # If positive, treat (loss = 10 * P(healthy) + 5 * P(disease))
+  loss_after_pos <- 10 * (1 - post_confirm_pos) + 5 * post_confirm_pos
+
+  # If negative, don't treat (loss = 0 * P(healthy) + 100 * P(disease))
+  loss_after_neg <- 0 * (1 - post_confirm_neg) + 100 * post_confirm_neg
+
+  # Expected loss with confirmatory test
+  loss_confirmatory <- confirm_cost +
+                      prob_confirm_pos * loss_after_pos +
+                      prob_confirm_neg * loss_after_neg
+
+  # Choose minimum loss option
+  losses <- c(loss_no_treatment, loss_treatment, loss_confirmatory)
+  optimal_idx <- which.min(losses)
+  decisions <- c("No Treatment", "Immediate Treatment", "Order Confirmatory Test")
+
+  return(list(
+    decision = decisions[optimal_idx],
+    losses = losses,
+    posterior = posterior_disease
+  ))
+}
+
+# Make decisions for all test combinations
+decisions_summary <- posterior_summary
+decisions_summary$decision <- character(4)
+decisions_summary$loss_no_treat <- numeric(4)
+decisions_summary$loss_treat <- numeric(4)
+decisions_summary$loss_confirm <- numeric(4)
+
+for (i in 1:4) {
+  result <- make_sequential_decision(posteriors[i], confirm_sens, confirm_spec)
+  decisions_summary$decision[i] <- result$decision
+  decisions_summary$loss_no_treat[i] <- result$losses[1]
+  decisions_summary$loss_treat[i] <- result$losses[2]
+  decisions_summary$loss_confirm[i] <- result$losses[3]
+}
+
+cat("\nOptimal Sequential Decisions:\n\n")
+print(decisions_summary[, c("test1", "test2", "posterior", "decision")])
+
+# Visualize decision regions
+ggplot(decisions_summary, aes(x = test1, y = test2, fill = decision)) +
+  geom_tile(color = "white", linewidth = 2, alpha = 0.8) +
+  geom_text(aes(label = sprintf("%s\nP(D|T)=%.3f", decision, posterior)),
+            color = "black", fontface = "bold", size = 4) +
+  scale_fill_manual(values = c("No Treatment" = "#2ecc71",
+                               "Immediate Treatment" = "#e74c3c",
+                               "Order Confirmatory Test" = "#f39c12")) +
+  labs(title = "Optimal Sequential Decisions",
+       subtitle = "Based on initial screening test results",
+       x = "Test 1 Result",
+       y = "Test 2 Result",
+       fill = "Decision") +
+  theme_minimal(base_size = 14) +
+  theme(legend.position = "top",
+        panel.grid = element_blank())
+
+# Compare expected losses
+loss_comparison <- decisions_summary %>%
+  select(test1, test2, loss_no_treat, loss_treat, loss_confirm) %>%
+  pivot_longer(cols = starts_with("loss"),
+               names_to = "decision_type",
+               values_to = "expected_loss") %>%
+  mutate(decision_type = recode(decision_type,
+                               loss_no_treat = "No Treatment",
+                               loss_treat = "Immediate Treatment",
+                               loss_confirm = "Confirmatory Test"))
+
+ggplot(loss_comparison, aes(x = decision_type, y = expected_loss, fill = decision_type)) +
+  geom_bar(stat = "identity", alpha = 0.8) +
+  facet_grid(test1 ~ test2, labeller = label_both) +
+  scale_fill_manual(values = c("No Treatment" = "#2ecc71",
+                               "Immediate Treatment" = "#e74c3c",
+                               "Confirmatory Test" = "#f39c12")) +
+  labs(title = "Expected Loss Comparison for All Test Result Combinations",
+       x = "Decision",
+       y = "Expected Loss") +
+  theme_minimal(base_size = 11) +
+  theme(legend.position = "none",
+        axis.text.x = element_text(angle = 45, hjust = 1))
+```
+
+**Key insight**: When screening tests give mixed or uncertain signals (posterior probability of disease ~0.3-0.6), ordering a confirmatory test minimizes expected loss despite its cost. For very low or very high posterior probabilities, immediate decisions are optimal.
+
+# Summary
+
+Multivariate Bayesian Decision Theory extends the fundamental principles to handle:
+
+## Key Concepts Covered
+
+1. **Multivariate Classification**
+   - Multiple continuous features
+   - Multiple disease classes
+   - Asymmetric loss matrices reflecting real costs
+   - Decision boundaries depend on both posteriors and losses
+
+2. **Treatment Selection Under Uncertainty**
+   - Posterior distributions over latent risk parameters
+   - Integration of uncertainty in decision-making
+   - Different treatments optimal for different risk profiles
+
+3. **Sequential Decision Making**
+   - Value of information from additional tests
+   - Balancing testing costs with decision quality
+   - Optimal stopping: when to test vs. decide
+
+## Healthcare Decision-Making Principles
+
+- **Incorporate multiple sources of information**: Blood tests, imaging, patient history
+- **Account for asymmetric costs**: Missing a serious disease is often much worse than a false alarm
+- **Quantify uncertainty**: Bayesian posteriors provide natural measures of confidence
+- **Value of information**: Additional tests worth the cost when posterior uncertainty is high
+- **Personalized decisions**: Optimal actions depend on individual patient characteristics
+
+## Extensions
+
+The framework naturally extends to:
+- Longitudinal data (multiple measurements over time)
+- Hierarchical models (patient-level and population-level parameters)
+- Non-parametric priors (Gaussian processes for flexible risk modeling)
+- Survival analysis (time-to-event outcomes)
+- Cost-effectiveness analysis (QALYs, willingness-to-pay thresholds)
+
+## Further Reading
+
+- **Spiegelhalter, D.J., Abrams, K.R., & Myles, J.P.** (2004). *Bayesian Approaches to Clinical Trials and Health-Care Evaluation*
+- **Parmigiani, G.** (2002). *Modeling in Medical Decision Making: A Bayesian Approach*
+- **Berger, J.O.** (1985). *Statistical Decision Theory and Bayesian Analysis* - Chapter on Multiple Decision Problems
+
+## Session Info
+
+```{r session-info}
+sessionInfo()
+```

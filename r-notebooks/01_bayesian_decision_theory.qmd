@@ -1,0 +1,464 @@
+---
+title: "Applied Bayesian Decision Theory: A Tutorial"
+author: "Data Science Tutorial"
+format:
+  html:
+    toc: true
+    toc-depth: 3
+    code-fold: false
+    theme: cosmo
+    highlight-style: github
+    number-sections: true
+execute:
+  warning: false
+  message: false
+---
+
+# Introduction to Bayesian Decision Theory
+
+Bayesian Decision Theory provides a principled framework for making optimal decisions under uncertainty. It combines:
+
+1. **Prior beliefs** about the world (encoded as probability distributions)
+2. **Data/Evidence** that updates our beliefs
+3. **Loss functions** that quantify the consequences of decisions
+4. **Decision rules** that minimize expected loss
+
+The fundamental idea is to choose actions that minimize **expected loss** (or equivalently, maximize expected utility) given our posterior beliefs after observing data.
+
+## The Bayesian Decision Framework
+
+Given:
+- $\theta \in \Theta$: unknown state of the world (parameter space)
+- $x$: observed data
+- $a \in \mathcal{A}$: possible actions/decisions
+- $L(\theta, a)$: loss function for taking action $a$ when true state is $\theta$
+
+The **Bayes optimal decision** is:
+
+$$
+a^* = \arg\min_{a \in \mathcal{A}} \mathbb{E}_{\theta|x}[L(\theta, a)] = \arg\min_{a \in \mathcal{A}} \int L(\theta, a) p(\theta|x) d\theta
+$$
+
+where $p(\theta|x)$ is the posterior distribution obtained via Bayes' theorem:
+
+$$
+p(\theta|x) = \frac{p(x|\theta)p(\theta)}{\int p(x|\theta)p(\theta)d\theta}
+$$
+
+# Setup
+
+```{r setup}
+library(ggplot2)
+library(dplyr)
+library(tidyr)
+library(MASS)
+library(mvtnorm)
+
+# Set seed for reproducibility
+set.seed(42)
+
+# Custom theme for plots
+theme_set(theme_minimal(base_size = 12))
+```
+
+# Example 1: Medical Diagnosis with 0-1 Loss
+
+## Problem Setup
+
+Consider a medical test for a disease:
+- **Prior probability**: $P(\text{Disease}) = 0.01$ (1% prevalence)
+- **Test sensitivity**: $P(\text{Positive}|\text{Disease}) = 0.95$
+- **Test specificity**: $P(\text{Negative}|\text{No Disease}) = 0.90$
+
+**Decision problem**: Should we declare the patient has the disease given a positive test?
+
+**Actions**: $\mathcal{A} = \{\text{declare disease}, \text{declare healthy}\}$
+
+**Loss function** (0-1 loss):
+$$
+L(\theta, a) = \begin{cases}
+0 & \text{if correct decision} \\
+1 & \text{if incorrect decision}
+\end{cases}
+$$
+
+## Solution
+
+```{r medical-diagnosis}
+# Prior probability
+prior_disease <- 0.01
+prior_healthy <- 1 - prior_disease
+
+# Likelihoods
+sens <- 0.95  # P(Test+ | Disease)
+spec <- 0.90  # P(Test- | Healthy)
+
+# P(Test+ | Healthy) = 1 - specificity
+p_pos_given_healthy <- 1 - spec
+
+# Compute posterior using Bayes' theorem
+# P(Test+) = P(Test+|Disease)P(Disease) + P(Test+|Healthy)P(Healthy)
+p_test_positive <- sens * prior_disease + p_pos_given_healthy * prior_healthy
+
+# Posterior P(Disease | Test+)
+posterior_disease_given_positive <- (sens * prior_disease) / p_test_positive
+posterior_healthy_given_positive <- 1 - posterior_disease_given_positive
+
+cat("Prior P(Disease):", prior_disease, "\n")
+cat("Posterior P(Disease | Test+):", posterior_disease_given_positive, "\n")
+cat("Posterior P(Healthy | Test+):", posterior_healthy_given_positive, "\n\n")
+
+# Expected losses for each action
+loss_declare_disease <- 0 * posterior_disease_given_positive + 1 * posterior_healthy_given_positive
+loss_declare_healthy <- 1 * posterior_disease_given_positive + 0 * posterior_healthy_given_positive
+
+cat("Expected loss (declare disease):", loss_declare_disease, "\n")
+cat("Expected loss (declare healthy):", loss_declare_healthy, "\n\n")
+
+optimal_action <- ifelse(loss_declare_disease < loss_declare_healthy,
+                         "Declare disease",
+                         "Declare healthy")
+cat("Optimal decision:", optimal_action, "\n")
+```
+
+## Visualization
+
+```{r visualize-medical}
+# Create visualization of prior and posterior
+prob_data <- data.frame(
+  State = rep(c("Disease", "Healthy"), 2),
+  Probability = c(prior_disease, prior_healthy,
+                 posterior_disease_given_positive, posterior_healthy_given_positive),
+  Distribution = rep(c("Prior", "Posterior (Test+)"), each = 2)
+)
+
+ggplot(prob_data, aes(x = State, y = Probability, fill = State)) +
+  geom_bar(stat = "identity", alpha = 0.8) +
+  facet_wrap(~ Distribution) +
+  scale_fill_manual(values = c("Disease" = "#e74c3c", "Healthy" = "#2ecc71")) +
+  labs(title = "Bayesian Updating: Medical Diagnosis",
+       subtitle = "How a positive test result updates our beliefs",
+       y = "Probability") +
+  theme(legend.position = "none") +
+  geom_text(aes(label = sprintf("%.3f", Probability)),
+            vjust = -0.5, size = 4)
+```
+
+**Key insight**: Even with a positive test, the posterior probability of disease is only ~8.6%, because the disease is rare (low prior). This demonstrates the importance of considering base rates!
+
+# Example 2: Parameter Estimation with Quadratic Loss
+
+## Problem Setup
+
+Suppose we want to estimate a parameter $\theta$ (e.g., true mean) based on noisy observations.
+
+**Model**:
+- Prior: $\theta \sim \mathcal{N}(\mu_0, \sigma_0^2)$
+- Likelihood: $x|\theta \sim \mathcal{N}(\theta, \sigma^2)$
+- Loss: Quadratic loss $L(\theta, \hat{\theta}) = (\theta - \hat{\theta})^2$
+
+**Optimal estimator**: Under quadratic loss, the Bayes optimal estimator is the posterior mean.
+
+## Analytical Solution
+
+For the Normal-Normal conjugate model:
+
+$$
+p(\theta|x) = \mathcal{N}(\mu_n, \sigma_n^2)
+$$
+
+where:
+$$
+\mu_n = \frac{\sigma^2}{\sigma^2 + \sigma_0^2}\mu_0 + \frac{\sigma_0^2}{\sigma^2 + \sigma_0^2}x
+$$
+
+$$
+\sigma_n^2 = \frac{\sigma^2 \sigma_0^2}{\sigma^2 + \sigma_0^2}
+$$
+
+```{r parameter-estimation}
+# True parameter (unknown in practice)
+theta_true <- 5.0
+
+# Prior parameters
+mu_0 <- 3.0
+sigma_0 <- 2.0
+
+# Observation noise
+sigma <- 1.5
+
+# Generate observation
+x_obs <- rnorm(1, mean = theta_true, sd = sigma)
+cat("Observed data:", x_obs, "\n\n")
+
+# Compute posterior parameters
+sigma_n_sq <- (sigma^2 * sigma_0^2) / (sigma^2 + sigma_0^2)
+sigma_n <- sqrt(sigma_n_sq)
+mu_n <- (sigma^2 * mu_0 + sigma_0^2 * x_obs) / (sigma^2 + sigma_0^2)
+
+cat("Prior mean:", mu_0, "\n")
+cat("Prior sd:", sigma_0, "\n")
+cat("Posterior mean (Bayes estimator):", mu_n, "\n")
+cat("Posterior sd:", sigma_n, "\n")
+cat("True value:", theta_true, "\n")
+```
+
+## Visualization
+
+```{r visualize-estimation}
+# Create grid for plotting
+theta_grid <- seq(-2, 12, length.out = 500)
+
+# Prior, likelihood, and posterior densities
+prior_density <- dnorm(theta_grid, mean = mu_0, sd = sigma_0)
+likelihood_density <- dnorm(theta_grid, mean = x_obs, sd = sigma)
+posterior_density <- dnorm(theta_grid, mean = mu_n, sd = sigma_n)
+
+# Normalize likelihood for visualization
+likelihood_density <- likelihood_density / max(likelihood_density) * max(prior_density)
+
+dist_data <- data.frame(
+  theta = rep(theta_grid, 3),
+  density = c(prior_density, likelihood_density, posterior_density),
+  distribution = rep(c("Prior", "Likelihood (scaled)", "Posterior"), each = length(theta_grid))
+)
+
+ggplot(dist_data, aes(x = theta, y = density, color = distribution, linetype = distribution)) +
+  geom_line(linewidth = 1.2) +
+  geom_vline(xintercept = theta_true, linetype = "dashed", color = "black", linewidth = 0.8) +
+  annotate("text", x = theta_true + 0.5, y = max(dist_data$density) * 0.9,
+           label = "True θ", angle = 0) +
+  geom_vline(xintercept = mu_n, linetype = "dotted", color = "#e74c3c", linewidth = 1) +
+  annotate("text", x = mu_n - 0.5, y = max(dist_data$density) * 0.8,
+           label = "Posterior mean\n(Bayes estimator)", angle = 0, hjust = 1) +
+  scale_color_manual(values = c("Prior" = "#3498db",
+                                "Likelihood (scaled)" = "#f39c12",
+                                "Posterior" = "#e74c3c")) +
+  scale_linetype_manual(values = c("Prior" = "solid",
+                                   "Likelihood (scaled)" = "dashed",
+                                   "Posterior" = "solid")) +
+  labs(title = "Bayesian Parameter Estimation",
+       subtitle = "Prior × Likelihood → Posterior",
+       x = "Parameter θ",
+       y = "Density",
+       color = NULL,
+       linetype = NULL) +
+  theme(legend.position = "top")
+```
+
+**Key insight**: The posterior mean is a weighted average of the prior mean and the observed data, with weights determined by the relative precisions (inverse variances).
+
+# Example 3: Classification with Asymmetric Loss
+
+## Problem Setup
+
+Consider a binary classification problem where errors have different costs:
+
+**Scenario**: Credit card fraud detection
+- Class 0: Legitimate transaction
+- Class 1: Fraudulent transaction
+
+**Asymmetric loss matrix**:
+$$
+L = \begin{pmatrix}
+0 & 10 \\
+100 & 0
+\end{pmatrix}
+$$
+
+where $L_{ij}$ = loss when true class is $i$ but we predict class $j$.
+
+- False positive (flag legitimate as fraud): loss = 10
+- False negative (miss fraud): loss = 100
+
+## Generate Synthetic Data
+
+```{r fraud-data}
+# Generate synthetic credit card transaction data
+n_samples <- 1000
+fraud_rate <- 0.02  # 2% of transactions are fraudulent
+
+# Generate features (e.g., transaction amount, time of day features)
+# Class 0: legitimate (mean = 0), Class 1: fraud (mean = 2)
+true_class <- rbinom(n_samples, 1, fraud_rate)
+feature <- rnorm(n_samples, mean = 2 * true_class, sd = 1)
+
+fraud_data <- data.frame(
+  feature = feature,
+  true_class = factor(true_class, levels = c(0, 1), labels = c("Legitimate", "Fraud"))
+)
+
+# Visualize data distribution
+ggplot(fraud_data, aes(x = feature, fill = true_class)) +
+  geom_histogram(alpha = 0.6, bins = 50, position = "identity") +
+  scale_fill_manual(values = c("Legitimate" = "#2ecc71", "Fraud" = "#e74c3c")) +
+  labs(title = "Distribution of Transaction Features by Class",
+       x = "Feature Value",
+       y = "Count",
+       fill = "Class")
+```
+
+## Bayesian Classification with Custom Loss
+
+```{r fraud-classification}
+# For a new transaction with feature value x, compute P(Fraud|x) using Bayes' theorem
+# We'll estimate class-conditional densities from data
+
+# Fit class-conditional distributions
+legitimate_mean <- mean(fraud_data$feature[fraud_data$true_class == "Legitimate"])
+legitimate_sd <- sd(fraud_data$feature[fraud_data$true_class == "Legitimate"])
+fraud_mean <- mean(fraud_data$feature[fraud_data$true_class == "Fraud"])
+fraud_sd <- sd(fraud_data$feature[fraud_data$true_class == "Fraud"])
+
+# Prior probabilities
+prior_fraud <- mean(true_class)
+prior_legit <- 1 - prior_fraud
+
+cat("Estimated parameters:\n")
+cat("Legitimate: N(", round(legitimate_mean, 3), ",", round(legitimate_sd^2, 3), ")\n")
+cat("Fraud: N(", round(fraud_mean, 3), ",", round(fraud_sd^2, 3), ")\n\n")
+
+# Function to compute posterior probability of fraud
+posterior_fraud <- function(x) {
+  likelihood_legit <- dnorm(x, legitimate_mean, legitimate_sd)
+  likelihood_fraud <- dnorm(x, fraud_mean, fraud_sd)
+
+  numerator <- likelihood_fraud * prior_fraud
+  denominator <- likelihood_fraud * prior_fraud + likelihood_legit * prior_legit
+
+  return(numerator / denominator)
+}
+
+# Function to compute expected loss for each action
+# Loss matrix: L[true_class, predicted_class]
+#              Predict Legit  Predict Fraud
+# True Legit:       0             10
+# True Fraud:      100             0
+
+expected_loss_predict_legit <- function(x) {
+  p_fraud <- posterior_fraud(x)
+  p_legit <- 1 - p_fraud
+  return(0 * p_legit + 100 * p_fraud)
+}
+
+expected_loss_predict_fraud <- function(x) {
+  p_fraud <- posterior_fraud(x)
+  p_legit <- 1 - p_fraud
+  return(10 * p_legit + 0 * p_fraud)
+}
+
+# Optimal decision rule: predict fraud if expected loss is lower
+optimal_decision <- function(x) {
+  loss_legit <- expected_loss_predict_legit(x)
+  loss_fraud <- expected_loss_predict_fraud(x)
+  return(ifelse(loss_fraud < loss_legit, "Fraud", "Legitimate"))
+}
+
+# Test on new transactions
+test_features <- seq(-2, 5, by = 0.1)
+decisions <- data.frame(
+  feature = test_features,
+  posterior_fraud = sapply(test_features, posterior_fraud),
+  loss_predict_legit = sapply(test_features, expected_loss_predict_legit),
+  loss_predict_fraud = sapply(test_features, expected_loss_predict_fraud),
+  optimal_action = sapply(test_features, optimal_decision)
+)
+
+# Find decision boundary
+decision_boundary <- decisions$feature[which.min(abs(decisions$loss_predict_legit - decisions$loss_predict_fraud))]
+
+cat("Decision boundary:", round(decision_boundary, 3), "\n")
+cat("This corresponds to P(Fraud|x) =", round(posterior_fraud(decision_boundary), 3), "\n\n")
+
+# Note: With symmetric 0-1 loss, we'd classify as fraud when P(Fraud|x) > 0.5
+# With asymmetric loss, the threshold is different!
+threshold_symmetric <- decisions$feature[which.min(abs(decisions$posterior_fraud - 0.5))]
+cat("For comparison, symmetric 0-1 loss boundary:", round(threshold_symmetric, 3), "\n")
+```
+
+## Visualization of Decision Boundary
+
+```{r visualize-fraud-decision}
+# Plot expected losses
+loss_plot_data <- decisions %>%
+  pivot_longer(cols = c(loss_predict_legit, loss_predict_fraud),
+               names_to = "action",
+               values_to = "expected_loss") %>%
+  mutate(action = recode(action,
+                        loss_predict_legit = "Predict Legitimate",
+                        loss_predict_fraud = "Predict Fraud"))
+
+ggplot(loss_plot_data, aes(x = feature, y = expected_loss, color = action)) +
+  geom_line(linewidth = 1.2) +
+  geom_vline(xintercept = decision_boundary, linetype = "dashed", color = "black") +
+  annotate("text", x = decision_boundary - 0.3, y = max(loss_plot_data$expected_loss) * 0.9,
+           label = "Decision\nboundary", hjust = 1) +
+  scale_color_manual(values = c("Predict Legitimate" = "#2ecc71",
+                               "Predict Fraud" = "#e74c3c")) +
+  labs(title = "Expected Loss for Each Action",
+       subtitle = "Choose action with minimum expected loss",
+       x = "Feature Value",
+       y = "Expected Loss",
+       color = "Action") +
+  theme(legend.position = "top")
+
+# Plot posterior probability and decision regions
+ggplot(decisions, aes(x = feature, y = posterior_fraud)) +
+  geom_line(linewidth = 1.2, color = "#3498db") +
+  geom_hline(yintercept = 0.5, linetype = "dotted", color = "gray50", alpha = 0.7) +
+  geom_vline(xintercept = decision_boundary, linetype = "dashed", color = "black", linewidth = 1) +
+  annotate("rect", xmin = -Inf, xmax = decision_boundary, ymin = -Inf, ymax = Inf,
+           alpha = 0.1, fill = "#2ecc71") +
+  annotate("rect", xmin = decision_boundary, xmax = Inf, ymin = -Inf, ymax = Inf,
+           alpha = 0.1, fill = "#e74c3c") +
+  annotate("text", x = -1, y = 0.95, label = "Predict\nLegitimate",
+           color = "#2ecc71", fontface = "bold") +
+  annotate("text", x = 4, y = 0.95, label = "Predict\nFraud",
+           color = "#e74c3c", fontface = "bold") +
+  annotate("text", x = 2.5, y = 0.55, label = "P(Fraud|x) = 0.5\n(symmetric loss threshold)",
+           color = "gray50", size = 3) +
+  labs(title = "Posterior Probability and Decision Regions",
+       subtitle = "Asymmetric loss shifts decision boundary below 0.5 threshold",
+       x = "Feature Value",
+       y = "P(Fraud | x)") +
+  ylim(0, 1)
+```
+
+**Key insight**: With asymmetric loss, the optimal decision boundary is **not** at P(Fraud|x) = 0.5. Because false negatives (missing fraud) are 10× more costly than false positives, we should predict fraud even when P(Fraud|x) < 0.5!
+
+# Summary
+
+Bayesian Decision Theory provides an optimal framework for decision-making under uncertainty by:
+
+1. **Incorporating prior knowledge** through prior distributions
+2. **Updating beliefs** with data via Bayes' theorem
+3. **Quantifying decision consequences** with loss functions
+4. **Choosing optimal actions** that minimize expected loss
+
+## Key Takeaways
+
+- **0-1 loss**: Optimal decision = highest posterior probability (MAP)
+- **Quadratic loss**: Optimal estimate = posterior mean
+- **Asymmetric loss**: Decision boundaries depend on loss ratios, not just P(class|x) = 0.5
+- **Prior information matters**: Especially important with limited data or rare events
+
+## Common Loss Functions
+
+| Loss Function | Formula | Optimal Decision |
+|--------------|---------|------------------|
+| 0-1 Loss | $L(\theta,a) = \mathbb{1}[\theta \neq a]$ | Posterior mode (MAP) |
+| Quadratic | $L(\theta,a) = (\theta - a)^2$ | Posterior mean |
+| Absolute | $L(\theta,a) = \|\theta - a\|$ | Posterior median |
+| Custom/Asymmetric | Problem-specific | Minimize $\mathbb{E}[L(\theta,a) \| x]$ |
+
+## Further Reading
+
+- **Berger, J.O.** (1985). *Statistical Decision Theory and Bayesian Analysis*
+- **Robert, C.P.** (2007). *The Bayesian Choice*
+- **Murphy, K.P.** (2022). *Probabilistic Machine Learning: An Introduction* (Chapter on Decision Theory)
+
+## Session Info
+
+```{r session-info}
+sessionInfo()
+```
