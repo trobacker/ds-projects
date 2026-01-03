@@ -47,7 +47,19 @@ $$
 
 # Setup
 
+::: {.callout-note}
+## Environment Setup
+This tutorial uses `renv` for package management. If running for the first time:
+
+1. Ensure you're in the `r-notebooks/` directory
+2. Run `Rscript setup_renv.R` to initialize the environment
+3. Alternatively, in R: `renv::restore()` to install all required packages
+
+The `.Rprofile` file will automatically activate renv when you open R in this directory.
+:::
+
 ```{r setup}
+# Load required libraries
 library(ggplot2)
 library(dplyr)
 library(tidyr)

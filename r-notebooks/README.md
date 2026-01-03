@@ -2,6 +2,27 @@
 
 This directory contains R tutorials and analyses using Quarto documents.
 
+## Quick Start
+
+```bash
+# 1. Navigate to this directory
+cd r-notebooks
+
+# 2. Set up R environment (one time only)
+Rscript setup_renv.R
+
+# 3. Render a tutorial
+quarto render 01_bayesian_decision_theory.qmd
+
+# 4. Open the generated HTML file
+open 01_bayesian_decision_theory.html
+```
+
+Or use RStudio:
+1. Open any `.qmd` file
+2. Click "Render" button (or Cmd/Ctrl + Shift + K)
+3. renv will automatically activate
+
 ## Setup
 
 ### Prerequisites
@@ -23,15 +44,71 @@ brew install quarto
 
 This project uses `renv` for R package management to ensure reproducibility.
 
-```r
-# Install renv if not already installed
-install.packages("renv")
+#### Option 1: Automated Setup (Recommended)
 
-# Navigate to the r-notebooks directory and restore packages
+```bash
+# Navigate to r-notebooks directory
+cd r-notebooks
+
+# Run setup script
+Rscript setup_renv.R
+```
+
+This will:
+1. Install renv if needed
+2. Initialize the renv project
+3. Install all required packages
+4. Create a snapshot of the environment
+
+#### Option 2: Manual Setup
+
+```r
+# In R, navigate to r-notebooks directory
+setwd("r-notebooks")
+
+# Install renv if not already installed
+if (!requireNamespace("renv", quietly = TRUE)) {
+  install.packages("renv")
+}
+
+# Initialize renv (first time only)
+renv::init()
+
+# Or restore from existing lockfile
 renv::restore()
 ```
 
-This will install all required packages specified in `renv.lock`.
+#### Verifying the Setup
+
+```r
+# Check that renv is active
+renv::status()
+
+# Test loading a package
+library(ggplot2)
+library(lightgbm)  # This may take longer to install
+```
+
+### Special Note: LightGBM Installation
+
+The `lightgbm` package (used in Tutorial 03) may require additional setup:
+
+**macOS:**
+```bash
+# Install cmake and libomp
+brew install cmake libomp
+```
+
+**Linux (Ubuntu/Debian):**
+```bash
+sudo apt-get install cmake libboost-dev libboost-system-dev libboost-filesystem-dev
+```
+
+**Windows:**
+- LightGBM should install directly from CRAN
+- If issues arise, see: https://lightgbm.readthedocs.io/en/latest/R/index.html
+
+If you encounter persistent issues with `lightgbm`, you can still run Tutorials 01 and 02 which don't require it.
 
 ## Rendering Documents
 
@@ -119,6 +196,71 @@ install.packages("package_name")
 renv::snapshot()  # Update renv.lock
 ```
 
+## Troubleshooting
+
+### renv not activating
+
+If renv doesn't activate automatically:
+```r
+# Manually source the activation script
+source("renv/activate.R")
+
+# Or restart R in the r-notebooks directory
+```
+
+### Package installation fails
+
+```r
+# Try installing from a specific CRAN mirror
+options(repos = c(CRAN = "https://cloud.r-project.org"))
+renv::restore()
+
+# Or install a specific package
+install.packages("package_name", repos = "https://cloud.r-project.org")
+```
+
+### lightgbm installation issues
+
+**macOS**: If you see compiler errors:
+```bash
+# Install required tools
+brew install cmake libomp
+
+# Then try again in R
+install.packages("lightgbm")
+```
+
+**Error: "cannot load shared library"**: This usually means missing system dependencies. See the special note about LightGBM above.
+
+### Quarto not found
+
+```bash
+# Check if quarto is installed
+which quarto
+
+# If not, install it
+brew install quarto  # macOS
+# Or download from https://quarto.org
+```
+
+### RStudio doesn't recognize renv
+
+1. Close RStudio
+2. Delete `.Rprofile` in your home directory (if it conflicts)
+3. Reopen RStudio in the `r-notebooks/` directory
+4. RStudio should now detect and use the local `.Rprofile`
+
+### Memory issues with large datasets
+
+If you encounter memory errors:
+```r
+# Reduce sample sizes in code chunks
+n_samples <- 1000  # Instead of 5000
+
+# Or increase R memory limit (Windows)
+memory.limit(size = 8000)
+```
+
 ## Tips
 
 - Keep tutorial documents well-organized with clear sections
@@ -126,3 +268,4 @@ renv::snapshot()  # Update renv.lock
 - Add code chunks with explanatory markdown
 - Generate visualizations to illustrate concepts
 - Run `renv::snapshot()` after installing new packages to update the lockfile
+- Each tutorial has renv instructions in a callout box at the setup section

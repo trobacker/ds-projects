@@ -20,20 +20,16 @@ Modern machine learning excels at **prediction** - estimating $P(y|\mathbf{x})$ 
 
 ## The Critical Distinction
 
-- **Machine Learning**: Learn $\hat{f}: \mathbf{x} \rightarrow y$ or $\hat{P}(y|\mathbf{x})$
-- **Decision Theory**: Choose $a^* = \arg\min_a \mathbb{E}[L(y, a) | \mathbf{x}]$
+-   **Machine Learning**: Learn $\hat{f}: \mathbf{x} \rightarrow y$ or $\hat{P}(y|\mathbf{x})$
+-   **Decision Theory**: Choose $a^* = \arg\min_a \mathbb{E}[L(y, a) | \mathbf{x}]$
 
-Most ML practitioners use **default decision rules**:
-- Classification: Predict class with highest probability (implicit 0-1 loss)
-- Regression: Predict the mean (implicit squared error loss)
+Most ML practitioners use **default decision rules**: - Classification: Predict class with highest probability (implicit 0-1 loss) - Regression: Predict the mean (implicit squared error loss)
 
 But **real applications have real costs** that rarely align with these defaults!
 
 ## Why This Matters
 
-Consider a medical diagnosis system:
-- Standard ML: Predict disease if $P(\text{disease}|\mathbf{x}) > 0.5$
-- Decision theory: Account for the fact that missing cancer ($L = 10000$) is much worse than unnecessary biopsy ($L = 100$)
+Consider a medical diagnosis system: - Standard ML: Predict disease if $P(\text{disease}|\mathbf{x}) > 0.5$ - Decision theory: Account for the fact that missing cancer ($L = 10000$) is much worse than unnecessary biopsy ($L = 100$)
 
 **Key insight**: The optimal decision threshold is **not** 0.5 when costs are asymmetric!
 
@@ -45,15 +41,25 @@ $$
 a^*(\mathbf{x}) = \arg\min_{a \in \mathcal{A}} \sum_{y} L(y, a) \cdot P(y|\mathbf{x})
 $$
 
-where $P(y|\mathbf{x})$ comes from **any** probabilistic ML model:
-- Logistic regression
-- Random forests with probability estimates
-- Gradient boosting machines (LightGBM, XGBoost)
-- Neural networks with softmax outputs
+where $P(y|\mathbf{x})$ comes from **any** probabilistic ML model: - Logistic regression - Random forests with probability estimates - Gradient boosting machines (LightGBM, XGBoost) - Neural networks with softmax outputs
 
 # Setup
 
+::: {.callout-note}
+## Environment Setup
+This tutorial uses `renv` for package management. If running for the first time:
+
+1. Ensure you're in the `r-notebooks/` directory
+2. Run `Rscript setup_renv.R` to initialize the environment
+3. Alternatively, in R: `renv::restore()` to install all required packages
+
+The `.Rprofile` file will automatically activate renv when you open R in this directory.
+
+**Note**: Installing `lightgbm` may require additional system dependencies. See the [LightGBM R package documentation](https://lightgbm.readthedocs.io/en/latest/R/index.html) if you encounter issues.
+:::
+
 ```{r setup}
+# Load required libraries
 library(ggplot2)
 library(dplyr)
 library(tidyr)
@@ -245,10 +251,10 @@ abline(a = 0, b = 1, lty = 2, col = "gray")
 
 Now let's define **real costs** for fraud detection:
 
-- **True Negative** (correctly identify legitimate): No cost = $0
-- **False Positive** (block legitimate transaction): Customer inconvenience = $25
-- **False Negative** (miss fraud): Average fraud loss = $500
-- **True Positive** (catch fraud): Investigation cost = $10
+-   **True Negative** (correctly identify legitimate): No cost = \$0
+-   **False Positive** (block legitimate transaction): Customer inconvenience = \$25
+-   **False Negative** (miss fraud): Average fraud loss = \$500
+-   **True Positive** (catch fraud): Investigation cost = \$10
 
 ```{r bayesian-decision}
 # Define loss matrix
@@ -444,10 +450,10 @@ ggplot(threshold_df, aes(x = threshold, y = total_cost)) +
 
 A hospital wants to allocate intervention resources to prevent 30-day readmissions. They have:
 
-- **No intervention**: $0 cost, but high readmission cost if patient returns
-- **Phone follow-up**: $50 cost, moderate effectiveness
-- **Home nurse visit**: $300 cost, high effectiveness
-- **Intensive case management**: $800 cost, very high effectiveness
+-   **No intervention**: \$0 cost, but high readmission cost if patient returns
+-   **Phone follow-up**: \$50 cost, moderate effectiveness
+-   **Home nurse visit**: \$300 cost, high effectiveness
+-   **Intensive case management**: \$800 cost, very high effectiveness
 
 The decision should depend on the patient's **risk of readmission**.
 
@@ -778,26 +784,27 @@ ggplot(intervention_by_risk, aes(x = risk_category, y = n_patients,
 
 ## The Complete Framework
 
-1. **Learn $P(y|\mathbf{x})$**: Use any ML model (LightGBM, XGBoost, neural nets, etc.)
-   - Focus on **calibrated probabilities**, not just accuracy
-   - Calibration methods: Platt scaling, isotonic regression
+1.  **Learn** $P(y|\mathbf{x})$: Use any ML model (LightGBM, XGBoost, neural nets, etc.)
 
-2. **Define $L(y, a)$**: Specify the **real-world loss function**
-   - Talk to stakeholders about actual costs
-   - Include operational costs, legal risks, opportunity costs
+    -   Focus on **calibrated probabilities**, not just accuracy
+    -   Calibration methods: Platt scaling, isotonic regression
 
-3. **Compute $\mathbb{E}[L(y, a) | \mathbf{x}]$**: For each action, calculate expected loss
-   $$\mathbb{E}[L(y, a) | \mathbf{x}] = \sum_y L(y, a) \cdot P(y|\mathbf{x})$$
+2.  **Define** $L(y, a)$: Specify the **real-world loss function**
 
-4. **Choose $a^* = \arg\min_a \mathbb{E}[L(y, a) | \mathbf{x}]$**: Take the action with minimum expected loss
+    -   Talk to stakeholders about actual costs
+    -   Include operational costs, legal risks, opportunity costs
+
+3.  **Compute** $\mathbb{E}[L(y, a) | \mathbf{x}]$: For each action, calculate expected loss $$\mathbb{E}[L(y, a) | \mathbf{x}] = \sum_y L(y, a) \cdot P(y|\mathbf{x})$$
+
+4.  **Choose** $a^* = \arg\min_a \mathbb{E}[L(y, a) | \mathbf{x}]$: Take the action with minimum expected loss
 
 ## When Does This Matter Most?
 
-- **Class imbalance**: Rare but important events (fraud, disease, equipment failure)
-- **Asymmetric costs**: Different types of errors have very different consequences
-- **Multiple actions**: Not just binary classification, but multiple intervention options
-- **Resource constraints**: Limited budget for interventions
-- **Sequential decisions**: When you can gather more information before acting
+-   **Class imbalance**: Rare but important events (fraud, disease, equipment failure)
+-   **Asymmetric costs**: Different types of errors have very different consequences
+-   **Multiple actions**: Not just binary classification, but multiple intervention options
+-   **Resource constraints**: Limited budget for interventions
+-   **Sequential decisions**: When you can gather more information before acting
 
 ## Practical Considerations
 
@@ -821,59 +828,53 @@ cal_plot <- calibration_plot(
 
 ### Sensitivity Analysis
 
-Always check how sensitive decisions are to:
-- Changes in the loss function
-- Uncertainty in cost estimates
-- Model calibration errors
+Always check how sensitive decisions are to: - Changes in the loss function - Uncertainty in cost estimates - Model calibration errors
 
 ### Implementation Tips
 
-- **Start simple**: Get loss function estimates from stakeholders
-- **Iterate**: Monitor actual outcomes and update costs
-- **Explain**: Decision theory provides interpretable thresholds
-- **A/B test**: Compare Bayesian decisions against current practice
+-   **Start simple**: Get loss function estimates from stakeholders
+-   **Iterate**: Monitor actual outcomes and update costs
+-   **Explain**: Decision theory provides interpretable thresholds
+-   **A/B test**: Compare Bayesian decisions against current practice
 
 # Summary
 
 ## Main Takeaways
 
-1. **ML models predict, Decision Theory decides**
-   - ML gives you $P(y|\mathbf{x})$
-   - Decision theory tells you what to do with it
-
-2. **Default thresholds (0.5) are rarely optimal**
-   - Optimal threshold depends on cost ratio: $\frac{L_{FP}}{L_{FP} + L_{FN}}$
-   - Can be much lower (fraud detection) or higher (spam filtering)
-
-3. **Gradient boosting + Decision Theory = Powerful**
-   - LightGBM/XGBoost excel at learning complex $P(y|\mathbf{x})$
-   - Decision theory handles the "so what?" part
-
-4. **Significant real-world impact**
-   - 30-70% cost reductions are common
-   - Better patient outcomes
-   - More efficient resource allocation
+1.  **ML models predict, Decision Theory decides**
+    -   ML gives you $P(y|\mathbf{x})$
+    -   Decision theory tells you what to do with it
+2.  **Default thresholds (0.5) are rarely optimal**
+    -   Optimal threshold depends on cost ratio: $\frac{L_{FP}}{L_{FP} + L_{FN}}$
+    -   Can be much lower (fraud detection) or higher (spam filtering)
+3.  **Gradient boosting + Decision Theory = Powerful**
+    -   LightGBM/XGBoost excel at learning complex $P(y|\mathbf{x})$
+    -   Decision theory handles the "so what?" part
+4.  **Significant real-world impact**
+    -   30-70% cost reductions are common
+    -   Better patient outcomes
+    -   More efficient resource allocation
 
 ## The Decision Theory Advantage
 
 | Without Decision Theory | With Decision Theory |
-|------------------------|---------------------|
-| Maximize accuracy/F1 | Minimize real costs |
-| Threshold at 0.5 | Optimal threshold |
-| Binary decisions | Multiple actions |
-| Same rule for all | Risk-stratified |
-| Hope it works | Provably optimal |
+|-------------------------|----------------------|
+| Maximize accuracy/F1    | Minimize real costs  |
+| Threshold at 0.5        | Optimal threshold    |
+| Binary decisions        | Multiple actions     |
+| Same rule for all       | Risk-stratified      |
+| Hope it works           | Provably optimal     |
 
 ## Further Reading
 
-- **Provost, F. & Fawcett, T.** (2013). *Data Science for Business* - Chapter 7: Decision-Analytic Thinking
-- **Berger, J.O.** (1985). *Statistical Decision Theory and Bayesian Analysis*
-- **Elkan, C.** (2001). "The Foundations of Cost-Sensitive Learning" - Classic paper on ML with costs
-- **Ferri, C., Hernández-Orallo, J., & Modroiu, R.** (2009). "An experimental comparison of performance measures for classification"
+-   **Provost, F. & Fawcett, T.** (2013). *Data Science for Business* - Chapter 7: Decision-Analytic Thinking
+-   **Berger, J.O.** (1985). *Statistical Decision Theory and Bayesian Analysis*
+-   **Elkan, C.** (2001). "The Foundations of Cost-Sensitive Learning" - Classic paper on ML with costs
+-   **Ferri, C., Hernández-Orallo, J., & Modroiu, R.** (2009). "An experimental comparison of performance measures for classification"
 
 ## Code Template
 
-```r
+``` r
 # 1. Train your ML model
 model <- train_any_model(X_train, y_train)
 
