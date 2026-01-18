@@ -38,15 +38,17 @@ uv sync
 # This creates a .venv directory with Python 3.13 and all packages
 ```
 
-### 3. Use with VS Code (Recommended)
+### 3. Use with VS Code / Positron (Recommended)
 
 See **[VSCODE_SETUP.md](VSCODE_SETUP.md)** for detailed VS Code setup instructions.
 
 **Quick version:**
-1. Install Python and Jupyter extensions in VS Code
-2. Open the repository in VS Code
-3. Select the `.venv` interpreter (Cmd/Ctrl+Shift+P → "Python: Select Interpreter")
+1. Install Python and Jupyter extensions (VS Code) or use Positron
+2. Open the repository in your editor
+3. Select the `.venv` interpreter (Cmd/Ctrl+Shift+P → "Python: Select Interpreter" or kernel selector)
 4. Open a notebook and start coding!
+
+**Note:** Each notebook includes environment setup instructions at the top for quick reference.
 
 ### 4. Or Use in Terminal
 
@@ -81,7 +83,19 @@ The environment includes common data science libraries:
 - **Machine learning**: scikit-learn, lightgbm
 - **Statistical analysis**: scipy, statsmodels
 - **Visualization**: matplotlib, seaborn, plotly
+- **Geospatial**: geopandas, contextily, folium, mapclassify
 - **Notebooks**: jupyter, jupyterlab, ipython
+
+## Available Notebooks
+
+### Python Notebooks (`notebooks/`)
+- **00_basic_data_exploration.ipynb** - Introductory notebook covering dataset exploration, manipulation, and visualization using scikit-learn datasets and synthetic data
+- **01_ml_tutorial_iris.ipynb** - Machine learning tutorial using the Iris dataset
+- **02_ml_tutorial_regression.ipynb** - Regression analysis tutorial using California Housing dataset
+- **03_spatial_analysis_california_housing.ipynb** - Geospatial analysis with geopandas and contextily
+
+### R Notebooks (`r-notebooks/`)
+See **[r-notebooks/README.md](r-notebooks/README.md)** for R tutorials including Bayesian Decision Theory.
 
 ## Development Workflow
 
