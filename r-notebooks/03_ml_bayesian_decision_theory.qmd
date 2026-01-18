@@ -1,0 +1,902 @@
+---
+title: "Machine Learning Meets Bayesian Decision Theory"
+author: "Data Science Tutorial"
+format:
+  html:
+    toc: true
+    toc-depth: 3
+    code-fold: false
+    theme: cosmo
+    highlight-style: github
+    number-sections: true
+execute:
+  warning: false
+  message: false
+---
+
+# Introduction: Bridging ML and Decision Theory
+
+Modern machine learning excels at **prediction** - estimating $P(y|\mathbf{x})$ from data. However, in practice we need to make **decisions** - choosing actions that minimize real-world costs.
+
+## The Critical Distinction
+
+-   **Machine Learning**: Learn $\hat{f}: \mathbf{x} \rightarrow y$ or $\hat{P}(y|\mathbf{x})$
+-   **Decision Theory**: Choose $a^* = \arg\min_a \mathbb{E}[L(y, a) | \mathbf{x}]$
+
+Most ML practitioners use **default decision rules**: - Classification: Predict class with highest probability (implicit 0-1 loss) - Regression: Predict the mean (implicit squared error loss)
+
+But **real applications have real costs** that rarely align with these defaults!
+
+## Why This Matters
+
+Consider a medical diagnosis system: - Standard ML: Predict disease if $P(\text{disease}|\mathbf{x}) > 0.5$ - Decision theory: Account for the fact that missing cancer ($L = 10000$) is much worse than unnecessary biopsy ($L = 100$)
+
+**Key insight**: The optimal decision threshold is **not** 0.5 when costs are asymmetric!
+
+## The Connection
+
+Bayesian Decision Theory provides the **optimal** way to convert ML predictions into decisions:
+
+$$
+a^*(\mathbf{x}) = \arg\min_{a \in \mathcal{A}} \sum_{y} L(y, a) \cdot P(y|\mathbf{x})
+$$
+
+where $P(y|\mathbf{x})$ comes from **any** probabilistic ML model: - Logistic regression - Random forests with probability estimates - Gradient boosting machines (LightGBM, XGBoost) - Neural networks with softmax outputs
+
+# Setup
+
+::: {.callout-note}
+## Environment Setup
+This tutorial uses `renv` for package management. If running for the first time:
+
+1. Ensure you're in the `r-notebooks/` directory
+2. Run `Rscript setup_renv.R` to initialize the environment
+3. Alternatively, in R: `renv::restore()` to install all required packages
+
+The `.Rprofile` file will automatically activate renv when you open R in this directory.
+
+**Note**: Installing `lightgbm` may require additional system dependencies. See the [LightGBM R package documentation](https://lightgbm.readthedocs.io/en/latest/R/index.html) if you encounter issues.
+:::
+
+```{r setup}
+# Load required libraries
+library(ggplot2)
+library(dplyr)
+library(tidyr)
+library(MASS)
+library(mvtnorm)
+library(lightgbm)
+library(pROC)
+library(gridExtra)
+
+# Set seed for reproducibility
+set.seed(42)
+
+# Custom theme
+theme_set(theme_minimal(base_size = 12))
+```
+
+# Example 1: From Binary Classification to Optimal Decisions
+
+## Generate Credit Card Fraud Data
+
+```{r fraud-data}
+# Generate synthetic credit card transaction data
+n_samples <- 5000
+fraud_rate <- 0.03  # 3% of transactions are fraud
+
+# Features: transaction amount, time features, location features
+generate_features <- function(n, is_fraud) {
+  if (is_fraud) {
+    # Fraudulent transactions: higher amounts, unusual times
+    amount <- exp(rnorm(n, mean = 5, sd = 1.2))
+    hour <- rnorm(n, mean = 2, sd = 4)  # Late night
+    distance_from_home <- rnorm(n, mean = 100, sd = 50)
+    num_transactions_24h <- rpois(n, lambda = 8)
+  } else {
+    # Legitimate transactions: normal patterns
+    amount <- exp(rnorm(n, mean = 3.5, sd = 1))
+    hour <- rnorm(n, mean = 14, sd = 5)  # Normal hours
+    distance_from_home <- rnorm(n, mean = 10, sd = 15)
+    num_transactions_24h <- rpois(n, lambda = 2)
+  }
+
+  data.frame(
+    amount = pmax(1, amount),
+    hour = (hour %% 24 + 24) %% 24,
+    distance_from_home = pmax(0, distance_from_home),
+    num_transactions_24h = num_transactions_24h
+  )
+}
+
+# Generate data
+n_fraud <- round(n_samples * fraud_rate)
+n_legit <- n_samples - n_fraud
+
+fraud_features <- generate_features(n_fraud, TRUE)
+legit_features <- generate_features(n_legit, FALSE)
+
+fraud_data <- rbind(
+  cbind(fraud_features, is_fraud = 1),
+  cbind(legit_features, is_fraud = 0)
+)
+
+# Add some derived features
+fraud_data <- fraud_data %>%
+  mutate(
+    log_amount = log(amount + 1),
+    is_night = ifelse(hour < 6 | hour > 22, 1, 0),
+    high_frequency = ifelse(num_transactions_24h > 5, 1, 0)
+  )
+
+# Split into train/test
+train_idx <- sample(1:nrow(fraud_data), size = 0.7 * nrow(fraud_data))
+train_data <- fraud_data[train_idx, ]
+test_data <- fraud_data[-train_idx, ]
+
+cat("Training set:", nrow(train_data), "transactions,",
+    sum(train_data$is_fraud), "fraudulent\n")
+cat("Test set:", nrow(test_data), "transactions,",
+    sum(test_data$is_fraud), "fraudulent\n")
+
+# Visualize data
+p1 <- ggplot(train_data, aes(x = log_amount, fill = factor(is_fraud))) +
+  geom_histogram(alpha = 0.6, bins = 40, position = "identity") +
+  scale_fill_manual(values = c("0" = "#2ecc71", "1" = "#e74c3c"),
+                    labels = c("Legitimate", "Fraud")) +
+  labs(title = "Transaction Amount Distribution",
+       x = "Log(Amount + 1)", y = "Count", fill = "Type")
+
+p2 <- ggplot(train_data, aes(x = hour, fill = factor(is_fraud))) +
+  geom_histogram(alpha = 0.6, bins = 24, position = "identity") +
+  scale_fill_manual(values = c("0" = "#2ecc71", "1" = "#e74c3c"),
+                    labels = c("Legitimate", "Fraud")) +
+  labs(title = "Transaction Time Distribution",
+       x = "Hour of Day", y = "Count", fill = "Type")
+
+grid.arrange(p1, p2, ncol = 2)
+```
+
+## Train ML Model: LightGBM
+
+```{r train-lgbm}
+# Prepare data for LightGBM
+feature_cols <- c("amount", "hour", "distance_from_home",
+                  "num_transactions_24h", "log_amount", "is_night", "high_frequency")
+
+train_matrix <- as.matrix(train_data[, feature_cols])
+test_matrix <- as.matrix(test_data[, feature_cols])
+
+train_label <- train_data$is_fraud
+test_label <- test_data$is_fraud
+
+# Create LightGBM datasets
+dtrain <- lgb.Dataset(data = train_matrix, label = train_label)
+dtest <- lgb.Dataset.create.valid(dtrain, data = test_matrix, label = test_label)
+
+# Train model
+params <- list(
+  objective = "binary",
+  metric = "auc",
+  learning_rate = 0.05,
+  num_leaves = 31,
+  max_depth = 6,
+  min_data_in_leaf = 20,
+  feature_fraction = 0.8,
+  bagging_fraction = 0.8,
+  bagging_freq = 5
+)
+
+lgb_model <- lgb.train(
+  params = params,
+  data = dtrain,
+  nrounds = 200,
+  valids = list(test = dtest),
+  early_stopping_rounds = 20,
+  verbose = -1
+)
+
+cat("\nModel trained! Best iteration:", lgb_model$best_iter, "\n")
+cat("Best test AUC:", lgb_model$best_score, "\n")
+
+# Feature importance
+importance <- lgb.importance(lgb_model)
+print(importance)
+
+# Visualize feature importance
+ggplot(importance[1:7,], aes(x = reorder(Feature, Gain), y = Gain)) +
+  geom_bar(stat = "identity", fill = "#3498db", alpha = 0.8) +
+  coord_flip() +
+  labs(title = "Feature Importance (LightGBM)",
+       x = "Feature", y = "Gain") +
+  theme_minimal(base_size = 12)
+```
+
+## Standard ML Approach: Threshold at 0.5
+
+```{r standard-ml}
+# Get predicted probabilities
+train_pred <- predict(lgb_model, train_matrix)
+test_pred <- predict(lgb_model, test_matrix)
+
+# Standard approach: threshold at 0.5
+standard_predictions <- ifelse(test_pred > 0.5, 1, 0)
+
+# Confusion matrix
+confusion_standard <- table(Actual = test_label, Predicted = standard_predictions)
+print("Standard ML Confusion Matrix (threshold = 0.5):")
+print(confusion_standard)
+
+# Metrics
+accuracy_standard <- sum(diag(confusion_standard)) / sum(confusion_standard)
+precision_standard <- confusion_standard[2,2] / sum(confusion_standard[,2])
+recall_standard <- confusion_standard[2,2] / sum(confusion_standard[2,])
+f1_standard <- 2 * precision_standard * recall_standard / (precision_standard + recall_standard)
+
+cat("\nStandard ML Performance:\n")
+cat("Accuracy:", round(accuracy_standard, 4), "\n")
+cat("Precision:", round(precision_standard, 4), "\n")
+cat("Recall:", round(recall_standard, 4), "\n")
+cat("F1 Score:", round(f1_standard, 4), "\n")
+
+# ROC curve
+roc_obj <- roc(test_label, test_pred, quiet = TRUE)
+cat("AUC:", round(auc(roc_obj), 4), "\n")
+
+plot(roc_obj, main = "ROC Curve", col = "#3498db", lwd = 2)
+abline(a = 0, b = 1, lty = 2, col = "gray")
+```
+
+## Bayesian Decision Theory Approach
+
+Now let's define **real costs** for fraud detection:
+
+-   **True Negative** (correctly identify legitimate): No cost = \$0
+-   **False Positive** (block legitimate transaction): Customer inconvenience = \$25
+-   **False Negative** (miss fraud): Average fraud loss = \$500
+-   **True Positive** (catch fraud): Investigation cost = \$10
+
+```{r bayesian-decision}
+# Define loss matrix
+# Rows: True class (0 = legit, 1 = fraud)
+# Cols: Predicted class (0 = legit, 1 = fraud)
+loss_matrix <- matrix(c(
+  0,    25,   # True legit: correct = 0, flag as fraud = 25
+  500,  10    # True fraud: miss = 500, catch = 10
+), nrow = 2, byrow = TRUE)
+
+rownames(loss_matrix) <- c("Legitimate", "Fraud")
+colnames(loss_matrix) <- c("Predict Legit", "Predict Fraud")
+
+print("Loss Matrix:")
+print(loss_matrix)
+
+# Compute expected loss for each prediction decision
+# For each transaction with P(fraud|x):
+# - Expected loss if predict legitimate: 0 * P(legit) + 500 * P(fraud)
+# - Expected loss if predict fraud: 25 * P(legit) + 10 * P(fraud)
+
+compute_expected_losses <- function(p_fraud) {
+  p_legit <- 1 - p_fraud
+  loss_predict_legit <- 0 * p_legit + 500 * p_fraud
+  loss_predict_fraud <- 25 * p_legit + 10 * p_fraud
+  return(list(loss_legit = loss_predict_legit,
+              loss_fraud = loss_predict_fraud))
+}
+
+# Make optimal decisions
+bayesian_predictions <- numeric(length(test_pred))
+for (i in seq_along(test_pred)) {
+  losses <- compute_expected_losses(test_pred[i])
+  # Predict fraud if expected loss is lower
+  bayesian_predictions[i] <- ifelse(losses$loss_fraud < losses$loss_legit, 1, 0)
+}
+
+# Find optimal threshold
+# Predict fraud when: 25 * (1 - p) + 10 * p < 0 * (1 - p) + 500 * p
+# 25 - 25p + 10p < 500p
+# 25 < 515p
+# p > 25/515 ≈ 0.0485
+
+optimal_threshold <- 25 / (25 + 500 - 10)
+cat("\nOptimal decision threshold:", round(optimal_threshold, 4), "\n")
+cat("Standard ML threshold: 0.5\n")
+cat("Ratio:", round(0.5 / optimal_threshold, 2), "x higher than optimal!\n\n")
+
+# Confusion matrix for Bayesian approach
+confusion_bayesian <- table(Actual = test_label, Predicted = bayesian_predictions)
+print("Bayesian Decision Theory Confusion Matrix:")
+print(confusion_bayesian)
+
+# Metrics
+accuracy_bayesian <- sum(diag(confusion_bayesian)) / sum(confusion_bayesian)
+precision_bayesian <- confusion_bayesian[2,2] / sum(confusion_bayesian[,2])
+recall_bayesian <- confusion_bayesian[2,2] / sum(confusion_bayesian[2,])
+f1_bayesian <- 2 * precision_bayesian * recall_bayesian / (precision_bayesian + recall_bayesian)
+
+cat("\nBayesian Decision Theory Performance:\n")
+cat("Accuracy:", round(accuracy_bayesian, 4), "\n")
+cat("Precision:", round(precision_bayesian, 4), "\n")
+cat("Recall:", round(recall_bayesian, 4), "\n")
+cat("F1 Score:", round(f1_bayesian, 4), "\n")
+```
+
+## Cost-Based Comparison
+
+```{r cost-comparison}
+# Calculate total costs for each approach
+calculate_total_cost <- function(confusion_matrix, loss_matrix) {
+  # TN, FP, FN, TP
+  tn <- confusion_matrix[1,1]
+  fp <- confusion_matrix[1,2]
+  fn <- confusion_matrix[2,1]
+  tp <- confusion_matrix[2,2]
+
+  total_cost <- tn * loss_matrix[1,1] +  # True legit, predict legit
+                fp * loss_matrix[1,2] +  # True legit, predict fraud
+                fn * loss_matrix[2,1] +  # True fraud, predict legit
+                tp * loss_matrix[2,2]    # True fraud, predict fraud
+
+  return(total_cost)
+}
+
+cost_standard <- calculate_total_cost(confusion_standard, loss_matrix)
+cost_bayesian <- calculate_total_cost(confusion_bayesian, loss_matrix)
+
+cat("\nTotal Cost Comparison:\n")
+cat("Standard ML (threshold = 0.5):", cost_standard, "\n")
+cat("Bayesian Decision Theory:", cost_bayesian, "\n")
+cat("Cost Reduction:", round((cost_standard - cost_bayesian) / cost_standard * 100, 2), "%\n")
+cat("Savings:", cost_standard - cost_bayesian, "\n")
+
+# Visualize comparison
+comparison_df <- data.frame(
+  Approach = c("Standard ML\n(threshold=0.5)", "Bayesian\nDecision Theory"),
+  Total_Cost = c(cost_standard, cost_bayesian),
+  Accuracy = c(accuracy_standard, accuracy_bayesian),
+  Recall = c(recall_standard, recall_bayesian),
+  Precision = c(precision_standard, precision_bayesian)
+)
+
+ggplot(comparison_df, aes(x = Approach, y = Total_Cost, fill = Approach)) +
+  geom_bar(stat = "identity", alpha = 0.8) +
+  geom_text(aes(label = paste0("$", Total_Cost)), vjust = -0.5, size = 5, fontface = "bold") +
+  scale_fill_manual(values = c("#95a5a6", "#2ecc71")) +
+  labs(title = "Total Cost Comparison",
+       subtitle = "Lower is better",
+       x = "", y = "Total Cost ($)") +
+  theme(legend.position = "none")
+
+# Metrics comparison
+metrics_long <- comparison_df %>%
+  select(Approach, Accuracy, Recall, Precision) %>%
+  pivot_longer(cols = c(Accuracy, Recall, Precision),
+               names_to = "Metric",
+               values_to = "Value")
+
+ggplot(metrics_long, aes(x = Metric, y = Value, fill = Approach)) +
+  geom_bar(stat = "identity", position = "dodge", alpha = 0.8) +
+  scale_fill_manual(values = c("#95a5a6", "#2ecc71")) +
+  labs(title = "Performance Metrics Comparison",
+       y = "Score") +
+  theme(legend.position = "top") +
+  ylim(0, 1)
+```
+
+## Threshold Analysis
+
+```{r threshold-analysis}
+# Evaluate cost at different thresholds
+thresholds <- seq(0.01, 0.99, by = 0.01)
+costs_at_threshold <- numeric(length(thresholds))
+recalls_at_threshold <- numeric(length(thresholds))
+precisions_at_threshold <- numeric(length(thresholds))
+
+for (i in seq_along(thresholds)) {
+  thresh <- thresholds[i]
+  preds <- ifelse(test_pred > thresh, 1, 0)
+  conf <- table(Actual = test_label, Predicted = preds)
+
+  # Handle edge cases where confusion matrix doesn't have all categories
+  if (length(conf) == 4) {
+    costs_at_threshold[i] <- calculate_total_cost(conf, loss_matrix)
+    recalls_at_threshold[i] <- conf[2,2] / sum(conf[2,])
+    precisions_at_threshold[i] <- conf[2,2] / sum(conf[,2])
+  } else {
+    costs_at_threshold[i] <- NA
+    recalls_at_threshold[i] <- NA
+    precisions_at_threshold[i] <- NA
+  }
+}
+
+threshold_df <- data.frame(
+  threshold = thresholds,
+  total_cost = costs_at_threshold,
+  recall = recalls_at_threshold,
+  precision = precisions_at_threshold
+)
+
+# Find minimum cost threshold
+min_cost_idx <- which.min(threshold_df$total_cost)
+min_cost_threshold <- threshold_df$threshold[min_cost_idx]
+min_cost <- threshold_df$total_cost[min_cost_idx]
+
+cat("\nEmpirical minimum cost threshold:", round(min_cost_threshold, 4), "\n")
+cat("Theoretical optimal threshold:", round(optimal_threshold, 4), "\n")
+
+# Visualize
+ggplot(threshold_df, aes(x = threshold, y = total_cost)) +
+  geom_line(color = "#3498db", linewidth = 1.2) +
+  geom_vline(xintercept = 0.5, linetype = "dashed", color = "#e74c3c", linewidth = 1) +
+  annotate("text", x = 0.5, y = max(threshold_df$total_cost, na.rm = TRUE) * 0.9,
+           label = "Standard ML\n(threshold = 0.5)", color = "#e74c3c", hjust = -0.1) +
+  geom_vline(xintercept = optimal_threshold, linetype = "dashed", color = "#2ecc71", linewidth = 1) +
+  annotate("text", x = optimal_threshold, y = max(threshold_df$total_cost, na.rm = TRUE) * 0.7,
+           label = "Optimal Bayesian\nthreshold", color = "#2ecc71", hjust = -0.1) +
+  geom_point(aes(x = min_cost_threshold, y = min_cost),
+             color = "#2ecc71", size = 4) +
+  labs(title = "Total Cost vs. Classification Threshold",
+       subtitle = "Finding the optimal decision boundary",
+       x = "Classification Threshold",
+       y = "Total Cost ($)") +
+  theme_minimal(base_size = 12)
+```
+
+**Key takeaway**: By using the ML model's probability estimates with Bayesian decision theory, we achieve substantial cost savings while catching more fraud!
+
+# Example 2: Hospital Readmission Prevention
+
+## Problem Setup
+
+A hospital wants to allocate intervention resources to prevent 30-day readmissions. They have:
+
+-   **No intervention**: \$0 cost, but high readmission cost if patient returns
+-   **Phone follow-up**: \$50 cost, moderate effectiveness
+-   **Home nurse visit**: \$300 cost, high effectiveness
+-   **Intensive case management**: \$800 cost, very high effectiveness
+
+The decision should depend on the patient's **risk of readmission**.
+
+## Generate Hospital Data
+
+```{r readmission-data}
+# Generate synthetic patient data
+n_patients <- 3000
+
+# Risk factors
+age <- rnorm(n_patients, mean = 65, sd = 15)
+num_comorbidities <- rpois(n_patients, lambda = 2)
+length_of_stay <- rgamma(n_patients, shape = 3, scale = 2)
+num_medications <- rpois(n_patients, lambda = 5)
+prior_admissions <- rpois(n_patients, lambda = 1)
+
+# Logistic model for readmission
+logit_readmit <- -3 +
+  0.02 * age +
+  0.3 * num_comorbidities +
+  0.15 * length_of_stay +
+  0.1 * num_medications +
+  0.4 * prior_admissions +
+  rnorm(n_patients, 0, 0.5)
+
+prob_readmit <- 1 / (1 + exp(-logit_readmit))
+readmitted <- rbinom(n_patients, 1, prob_readmit)
+
+hospital_data <- data.frame(
+  age = age,
+  num_comorbidities = num_comorbidities,
+  length_of_stay = length_of_stay,
+  num_medications = num_medications,
+  prior_admissions = prior_admissions,
+  readmitted = readmitted
+)
+
+cat("Overall readmission rate:", round(mean(readmitted), 3), "\n")
+
+# Split data
+train_idx_h <- sample(1:nrow(hospital_data), size = 0.7 * nrow(hospital_data))
+train_hospital <- hospital_data[train_idx_h, ]
+test_hospital <- hospital_data[-train_idx_h, ]
+
+# Visualize
+ggplot(train_hospital, aes(x = num_comorbidities, y = age, color = factor(readmitted))) +
+  geom_point(alpha = 0.5, size = 2) +
+  scale_color_manual(values = c("0" = "#2ecc71", "1" = "#e74c3c"),
+                     labels = c("No Readmission", "Readmitted")) +
+  labs(title = "Patient Risk Factors",
+       x = "Number of Comorbidities",
+       y = "Age",
+       color = "Outcome") +
+  theme(legend.position = "top")
+```
+
+## Train Gradient Boosting Model
+
+```{r train-readmission-model}
+# Prepare data
+feature_cols_h <- c("age", "num_comorbidities", "length_of_stay",
+                    "num_medications", "prior_admissions")
+
+train_matrix_h <- as.matrix(train_hospital[, feature_cols_h])
+test_matrix_h <- as.matrix(test_hospital[, feature_cols_h])
+
+dtrain_h <- lgb.Dataset(data = train_matrix_h, label = train_hospital$readmitted)
+dtest_h <- lgb.Dataset.create.valid(dtrain_h, data = test_matrix_h, label = test_hospital$readmitted)
+
+# Train model
+lgb_readmit <- lgb.train(
+  params = list(
+    objective = "binary",
+    metric = "auc",
+    learning_rate = 0.05,
+    num_leaves = 15,
+    max_depth = 5
+  ),
+  data = dtrain_h,
+  nrounds = 150,
+  valids = list(test = dtest_h),
+  early_stopping_rounds = 15,
+  verbose = -1
+)
+
+cat("Model trained! AUC:", round(lgb_readmit$best_score, 4), "\n\n")
+
+# Get predictions
+test_pred_h <- predict(lgb_readmit, test_matrix_h)
+
+# Visualize predicted risk distribution
+pred_df <- data.frame(
+  predicted_risk = test_pred_h,
+  actual_readmit = factor(test_hospital$readmitted,
+                          levels = c(0, 1),
+                          labels = c("No Readmission", "Readmitted"))
+)
+
+ggplot(pred_df, aes(x = predicted_risk, fill = actual_readmit)) +
+  geom_histogram(alpha = 0.6, bins = 40, position = "identity") +
+  scale_fill_manual(values = c("No Readmission" = "#2ecc71", "Readmitted" = "#e74c3c")) +
+  labs(title = "Distribution of Predicted Readmission Risk",
+       x = "Predicted Probability of Readmission",
+       y = "Count",
+       fill = "Actual Outcome") +
+  theme(legend.position = "top")
+```
+
+## Bayesian Decision Theory for Intervention Selection
+
+```{r intervention-decision}
+# Define costs and intervention effectiveness
+# Cost of readmission: $12,000 (average)
+readmission_cost <- 12000
+
+# Intervention options and their costs
+interventions <- data.frame(
+  name = c("None", "Phone Follow-up", "Home Visit", "Case Management"),
+  cost = c(0, 50, 300, 800),
+  # Risk reduction multipliers (how much they reduce readmission probability)
+  risk_reduction = c(0, 0.25, 0.50, 0.70)
+)
+
+print("Intervention Options:")
+print(interventions)
+
+# Function to compute expected cost for each intervention
+compute_intervention_cost <- function(p_readmit, interventions, readmission_cost) {
+  expected_costs <- numeric(nrow(interventions))
+
+  for (i in 1:nrow(interventions)) {
+    intervention_cost <- interventions$cost[i]
+    risk_reduction <- interventions$risk_reduction[i]
+
+    # Adjusted readmission probability after intervention
+    p_readmit_after <- p_readmit * (1 - risk_reduction)
+
+    # Expected cost = intervention cost + expected readmission cost
+    expected_costs[i] <- intervention_cost + p_readmit_after * readmission_cost
+  }
+
+  return(expected_costs)
+}
+
+# Make optimal decisions for test set
+optimal_interventions <- character(nrow(test_hospital))
+expected_costs_matrix <- matrix(NA, nrow = nrow(test_hospital), ncol = nrow(interventions))
+
+for (i in 1:nrow(test_hospital)) {
+  costs <- compute_intervention_cost(test_pred_h[i], interventions, readmission_cost)
+  expected_costs_matrix[i, ] <- costs
+  optimal_interventions[i] <- interventions$name[which.min(costs)]
+}
+
+test_hospital$optimal_intervention <- optimal_interventions
+test_hospital$predicted_risk <- test_pred_h
+
+# Summary of intervention allocation
+intervention_summary <- test_hospital %>%
+  group_by(optimal_intervention) %>%
+  summarise(
+    n_patients = n(),
+    avg_risk = mean(predicted_risk),
+    min_risk = min(predicted_risk),
+    max_risk = max(predicted_risk)
+  ) %>%
+  arrange(desc(avg_risk))
+
+print("\nOptimal Intervention Allocation:")
+print(intervention_summary)
+
+# Visualize decision regions
+ggplot(test_hospital, aes(x = predicted_risk, fill = optimal_intervention)) +
+  geom_histogram(bins = 50, alpha = 0.8) +
+  scale_fill_manual(values = c("None" = "#95a5a6",
+                               "Phone Follow-up" = "#3498db",
+                               "Home Visit" = "#f39c12",
+                               "Case Management" = "#e74c3c")) +
+  labs(title = "Optimal Intervention by Predicted Risk",
+       x = "Predicted Readmission Risk",
+       y = "Number of Patients",
+       fill = "Intervention") +
+  theme(legend.position = "top")
+
+# Risk-based decision boundaries
+risk_grid <- seq(0, 1, by = 0.01)
+decision_regions <- data.frame(risk = risk_grid)
+
+for (i in seq_along(risk_grid)) {
+  costs <- compute_intervention_cost(risk_grid[i], interventions, readmission_cost)
+  decision_regions$optimal_intervention[i] <- interventions$name[which.min(costs)]
+  decision_regions$min_cost[i] <- min(costs)
+}
+
+ggplot(decision_regions, aes(x = risk, y = min_cost, color = optimal_intervention)) +
+  geom_line(linewidth = 1.5) +
+  scale_color_manual(values = c("None" = "#95a5a6",
+                                "Phone Follow-up" = "#3498db",
+                                "Home Visit" = "#f39c12",
+                                "Case Management" = "#e74c3c")) +
+  labs(title = "Expected Cost vs. Readmission Risk",
+       subtitle = "Color indicates optimal intervention at each risk level",
+       x = "Predicted Readmission Risk",
+       y = "Expected Cost ($)",
+       color = "Optimal Intervention") +
+  theme(legend.position = "top")
+```
+
+## Cost Analysis: Bayesian vs. Simple Threshold
+
+```{r cost-analysis-readmission}
+# Compare against simple threshold strategies
+# Strategy 1: No intervention for anyone
+no_intervention_cost <- sum(test_pred_h * readmission_cost)
+
+# Strategy 2: Phone follow-up for everyone
+phone_for_all_cost <- nrow(test_hospital) * 50 +
+                     sum(test_pred_h * (1 - 0.25) * readmission_cost)
+
+# Strategy 3: High risk only (p > 0.3 gets phone call)
+high_risk_threshold <- 0.3
+high_risk_idx <- test_pred_h > high_risk_threshold
+threshold_cost <- sum(high_risk_idx) * 50 +
+                 sum(test_pred_h[high_risk_idx] * (1 - 0.25) * readmission_cost) +
+                 sum(test_pred_h[!high_risk_idx] * readmission_cost)
+
+# Strategy 4: Bayesian optimal intervention
+# Calculate actual cost for each patient under optimal intervention
+bayesian_costs <- numeric(nrow(test_hospital))
+for (i in 1:nrow(test_hospital)) {
+  intervention <- test_hospital$optimal_intervention[i]
+  intervention_idx <- which(interventions$name == intervention)
+
+  intervention_cost <- interventions$cost[intervention_idx]
+  risk_reduction <- interventions$risk_reduction[intervention_idx]
+  p_readmit_after <- test_pred_h[i] * (1 - risk_reduction)
+
+  bayesian_costs[i] <- intervention_cost + p_readmit_after * readmission_cost
+}
+bayesian_total_cost <- sum(bayesian_costs)
+
+# Compare all strategies
+strategy_comparison <- data.frame(
+  Strategy = c("No Intervention", "Phone for All",
+               "Threshold (p>0.3)", "Bayesian Optimal"),
+  Total_Cost = c(no_intervention_cost, phone_for_all_cost,
+                 threshold_cost, bayesian_total_cost),
+  Cost_Per_Patient = c(no_intervention_cost, phone_for_all_cost,
+                       threshold_cost, bayesian_total_cost) / nrow(test_hospital)
+)
+
+strategy_comparison <- strategy_comparison %>%
+  arrange(Total_Cost) %>%
+  mutate(
+    Savings_vs_Baseline = no_intervention_cost - Total_Cost,
+    Percent_Reduction = (no_intervention_cost - Total_Cost) / no_intervention_cost * 100
+  )
+
+print("\nStrategy Comparison:")
+print(strategy_comparison)
+
+cat("\n*** Bayesian approach saves $",
+    round(no_intervention_cost - bayesian_total_cost, 2),
+    " compared to no intervention ***\n")
+cat("That's $",
+    round((no_intervention_cost - bayesian_total_cost) / nrow(test_hospital), 2),
+    " per patient!\n")
+
+# Visualize
+ggplot(strategy_comparison, aes(x = reorder(Strategy, -Total_Cost),
+                                y = Total_Cost,
+                                fill = Strategy)) +
+  geom_bar(stat = "identity", alpha = 0.8) +
+  geom_text(aes(label = paste0("$", format(round(Total_Cost), big.mark = ","))),
+            vjust = -0.5, fontface = "bold", size = 4) +
+  scale_fill_manual(values = c("No Intervention" = "#e74c3c",
+                               "Phone for All" = "#f39c12",
+                               "Threshold (p>0.3)" = "#3498db",
+                               "Bayesian Optimal" = "#2ecc71")) +
+  labs(title = "Total Expected Cost by Strategy",
+       subtitle = paste0("Test set: ", nrow(test_hospital), " patients"),
+       x = "",
+       y = "Total Expected Cost ($)") +
+  theme(legend.position = "none",
+        axis.text.x = element_text(angle = 15, hjust = 1))
+```
+
+## Intervention Allocation Details
+
+```{r intervention-details}
+# Create detailed breakdown by risk category
+test_hospital <- test_hospital %>%
+  mutate(
+    risk_category = cut(predicted_risk,
+                       breaks = c(0, 0.1, 0.2, 0.3, 0.5, 1),
+                       labels = c("Very Low (<10%)", "Low (10-20%)",
+                                 "Moderate (20-30%)", "High (30-50%)",
+                                 "Very High (>50%)"),
+                       include.lowest = TRUE)
+  )
+
+intervention_by_risk <- test_hospital %>%
+  group_by(risk_category, optimal_intervention) %>%
+  summarise(n_patients = n(), .groups = "drop") %>%
+  group_by(risk_category) %>%
+  mutate(percent = n_patients / sum(n_patients) * 100)
+
+ggplot(intervention_by_risk, aes(x = risk_category, y = n_patients,
+                                 fill = optimal_intervention)) +
+  geom_bar(stat = "identity", position = "stack", alpha = 0.8) +
+  geom_text(aes(label = n_patients), position = position_stack(vjust = 0.5),
+            color = "white", fontface = "bold") +
+  scale_fill_manual(values = c("None" = "#95a5a6",
+                               "Phone Follow-up" = "#3498db",
+                               "Home Visit" = "#f39c12",
+                               "Case Management" = "#e74c3c")) +
+  labs(title = "Optimal Intervention Allocation by Risk Category",
+       x = "Predicted Risk Category",
+       y = "Number of Patients",
+       fill = "Intervention") +
+  theme(legend.position = "top",
+        axis.text.x = element_text(angle = 15, hjust = 1))
+```
+
+**Key insight**: The Bayesian decision framework automatically determines which patients should receive which level of intervention based on their individual risk profile and the cost-effectiveness of each option. This is more sophisticated than simple threshold-based rules!
+
+# Key Principles: ML + Decision Theory
+
+## The Complete Framework
+
+1.  **Learn** $P(y|\mathbf{x})$: Use any ML model (LightGBM, XGBoost, neural nets, etc.)
+
+    -   Focus on **calibrated probabilities**, not just accuracy
+    -   Calibration methods: Platt scaling, isotonic regression
+
+2.  **Define** $L(y, a)$: Specify the **real-world loss function**
+
+    -   Talk to stakeholders about actual costs
+    -   Include operational costs, legal risks, opportunity costs
+
+3.  **Compute** $\mathbb{E}[L(y, a) | \mathbf{x}]$: For each action, calculate expected loss $$\mathbb{E}[L(y, a) | \mathbf{x}] = \sum_y L(y, a) \cdot P(y|\mathbf{x})$$
+
+4.  **Choose** $a^* = \arg\min_a \mathbb{E}[L(y, a) | \mathbf{x}]$: Take the action with minimum expected loss
+
+## When Does This Matter Most?
+
+-   **Class imbalance**: Rare but important events (fraud, disease, equipment failure)
+-   **Asymmetric costs**: Different types of errors have very different consequences
+-   **Multiple actions**: Not just binary classification, but multiple intervention options
+-   **Resource constraints**: Limited budget for interventions
+-   **Sequential decisions**: When you can gather more information before acting
+
+## Practical Considerations
+
+### Probability Calibration
+
+ML models don't always produce well-calibrated probabilities. Check and fix:
+
+```{r calibration-check, eval=FALSE}
+# Quick calibration check
+library(CalibrationCurves)
+
+# Plot calibration curve
+cal_plot <- calibration_plot(
+  predictions = test_pred,
+  outcomes = test_label,
+  n_bins = 10
+)
+
+# If poorly calibrated, apply Platt scaling or isotonic regression
+```
+
+### Sensitivity Analysis
+
+Always check how sensitive decisions are to: - Changes in the loss function - Uncertainty in cost estimates - Model calibration errors
+
+### Implementation Tips
+
+-   **Start simple**: Get loss function estimates from stakeholders
+-   **Iterate**: Monitor actual outcomes and update costs
+-   **Explain**: Decision theory provides interpretable thresholds
+-   **A/B test**: Compare Bayesian decisions against current practice
+
+# Summary
+
+## Main Takeaways
+
+1.  **ML models predict, Decision Theory decides**
+    -   ML gives you $P(y|\mathbf{x})$
+    -   Decision theory tells you what to do with it
+2.  **Default thresholds (0.5) are rarely optimal**
+    -   Optimal threshold depends on cost ratio: $\frac{L_{FP}}{L_{FP} + L_{FN}}$
+    -   Can be much lower (fraud detection) or higher (spam filtering)
+3.  **Gradient boosting + Decision Theory = Powerful**
+    -   LightGBM/XGBoost excel at learning complex $P(y|\mathbf{x})$
+    -   Decision theory handles the "so what?" part
+4.  **Significant real-world impact**
+    -   30-70% cost reductions are common
+    -   Better patient outcomes
+    -   More efficient resource allocation
+
+## The Decision Theory Advantage
+
+| Without Decision Theory | With Decision Theory |
+|-------------------------|----------------------|
+| Maximize accuracy/F1    | Minimize real costs  |
+| Threshold at 0.5        | Optimal threshold    |
+| Binary decisions        | Multiple actions     |
+| Same rule for all       | Risk-stratified      |
+| Hope it works           | Provably optimal     |
+
+## Further Reading
+
+-   **Provost, F. & Fawcett, T.** (2013). *Data Science for Business* - Chapter 7: Decision-Analytic Thinking
+-   **Berger, J.O.** (1985). *Statistical Decision Theory and Bayesian Analysis*
+-   **Elkan, C.** (2001). "The Foundations of Cost-Sensitive Learning" - Classic paper on ML with costs
+-   **Ferri, C., Hernández-Orallo, J., & Modroiu, R.** (2009). "An experimental comparison of performance measures for classification"
+
+## Code Template
+
+``` r
+# 1. Train your ML model
+model <- train_any_model(X_train, y_train)
+
+# 2. Get probability predictions
+probs <- predict(model, X_test, type = "prob")
+
+# 3. Define loss matrix
+loss_matrix <- matrix(c(
+  cost_TN, cost_FP,
+  cost_FN, cost_TP
+), nrow = 2, byrow = TRUE)
+
+# 4. Make optimal decisions
+optimal_decisions <- apply(probs, 1, function(p) {
+  expected_loss_0 <- loss_matrix[1,1] * (1-p) + loss_matrix[2,1] * p
+  expected_loss_1 <- loss_matrix[1,2] * (1-p) + loss_matrix[2,2] * p
+  return(ifelse(expected_loss_1 < expected_loss_0, 1, 0))
+})
+```
+
+## Session Info
+
+```{r session-info}
+sessionInfo()
+```

@@ -6,11 +6,12 @@ A collection of data science projects and experiments.
 
 ```
 ds-projects/
-├── notebooks/       # Jupyter notebooks for exploratory analysis
+├── notebooks/       # Jupyter notebooks for Python analysis
+├── r-notebooks/     # R tutorials and analyses (Quarto)
 ├── scripts/         # Python scripts for data processing and analysis
 ├── data/           # Data files (gitignored)
 ├── results/        # Output files, figures, models (gitignored)
-└── pyproject.toml  # Project dependencies
+└── pyproject.toml  # Python project dependencies
 ```
 
 ## Quick Start
@@ -84,11 +85,15 @@ The environment includes common data science libraries:
 
 ## Development Workflow
 
+### Python Projects
 1. Activate the virtual environment
 2. Create notebooks in `notebooks/` or scripts in `scripts/`
 3. Store data in `data/` (not tracked by git)
 4. Save results/outputs in `results/` (not tracked by git)
 5. Document your work with clear markdown and comments
+
+### R Projects
+For R tutorials and analyses, see **[r-notebooks/README.md](r-notebooks/README.md)** for setup instructions using `renv` and Quarto
 
 ## Updating Dependencies
 
